@@ -11,8 +11,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "migrate": "node-pg-migrate",
-    "migrate:up": "node-pg-migrate up -m ./migrations",
-    "migrate:down": "node-pg-migrate down -m ./migrations",
+    "migrate:up": "node-pg-migrate up -m ./migrations --migrations-schema delay_tracker --migrations-table pgmigrations --create-schema",
+    "migrate:down": "node-pg-migrate down -m ./migrations --migrations-schema delay_tracker --migrations-table pgmigrations",
     "lint": "eslint src tests",
     "typecheck": "tsc --noEmit"
   },
