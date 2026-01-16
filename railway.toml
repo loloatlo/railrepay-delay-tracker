@@ -7,4 +7,4 @@ healthcheckPath = "/health/live"
 healthcheckTimeout = 30
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
-startCommand = "npm run migrate:up && node dist/index.js"
+startCommand = "node -e \"const{Pool}=require('pg');const p=new Pool();p.query('CREATE SCHEMA IF NOT EXISTS delay_tracker').then(()=>p.end())\" && npm run migrate:up && node dist/index.js"
