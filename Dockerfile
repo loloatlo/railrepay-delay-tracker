@@ -37,6 +37,9 @@ COPY --from=builder /app/dist ./dist
 # Copy migrations (needed for database setup)
 COPY migrations ./migrations
 
+# Copy initialization scripts
+COPY scripts ./scripts
+
 # Set environment to production
 ENV NODE_ENV=production
 
