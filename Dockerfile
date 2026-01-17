@@ -40,6 +40,9 @@ COPY migrations ./migrations
 # Copy initialization scripts
 COPY scripts ./scripts
 
+# Make startup script executable
+RUN chmod +x scripts/startup.sh
+
 # Set environment to production
 ENV NODE_ENV=production
 
