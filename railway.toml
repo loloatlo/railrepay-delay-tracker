@@ -7,4 +7,4 @@ healthcheckPath = "/health/live"
 healthcheckTimeout = 30
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
-startCommand = "node scripts/init-schema.js && npm run migrate:up && node dist/index.js"
+startCommand = "node scripts/init-schema.cjs && npm run migrate:up && node dist/index.js"
