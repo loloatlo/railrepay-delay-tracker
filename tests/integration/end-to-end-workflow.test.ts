@@ -45,6 +45,8 @@ import { OutboxPublisher } from '../../src/services/outbox-publisher.js';
 import { DarwinIngestorClient } from '../../src/clients/darwin-ingestor.js';
 // @ts-expect-error - Module does not exist yet (TDD RED phase)
 import { EligibilityEngineClient } from '../../src/clients/eligibility-engine.js';
+// @ts-expect-error - Module does not exist yet (TDD RED phase)
+import { JourneyMatcherClient, JourneyWithSegments } from '../../src/clients/journey-matcher.js';
 
 // Import fixtures
 import {
@@ -153,6 +155,7 @@ describe('End-to-End Delay Detection Workflow', () => {
   // Mock clients
   let mockDarwinClient: DarwinIngestorClient;
   let mockEligibilityClient: EligibilityEngineClient;
+  let mockJourneyMatcherClient: JourneyMatcherClient;
 
   beforeAll(async () => {
     // Start PostgreSQL container
@@ -203,6 +206,13 @@ describe('End-to-End Delay Detection Workflow', () => {
       checkEligibility: vi.fn().mockResolvedValue({ eligible: true }),
     } as unknown as EligibilityEngineClient;
 
+    // Initialize mock JourneyMatcherClient (TD-DELAY-001: RIDs from journey-matcher, not darwin-ingestor)
+    mockJourneyMatcherClient = {
+      getJourneyWithSegments: vi.fn().mockResolvedValue(null),
+      extractRidsFromSegments: vi.fn().mockReturnValue([]),
+      allSegmentsHaveRids: vi.fn().mockReturnValue(false),
+    } as unknown as JourneyMatcherClient;
+
     // Initialize services
     outboxPublisher = new OutboxPublisher({
       repository: outboxRepository,
@@ -228,6 +238,7 @@ describe('End-to-End Delay Detection Workflow', () => {
       delayAlertRepository,
       outboxPublisher,
       darwinClient: mockDarwinClient,
+      journeyMatcherClient: mockJourneyMatcherClient,
       pool,
     });
   });
@@ -682,10 +693,32 @@ describe('End-to-End Delay Detection Workflow', () => {
       // Journey registered early, now within 48h
       vi.setSystemTime(new Date('2026-01-18T10:00:00Z'));
 
-      mockDarwinClient.resolveRid = vi.fn().mockResolvedValue({
-        rid: '202601200800999',
-        found: true,
-      });
+      // TD-DELAY-001: RID resolution now uses JourneyMatcherClient, not DarwinIngestorClient
+      // Mock getJourneyWithSegments to return a journey with segments containing RIDs
+      const mockJourneyWithSegments: JourneyWithSegments = {
+        id: E2E_UUIDS.JOURNEY_RID_001,
+        user_id: E2E_UUIDS.USER_RID_001,
+        origin_crs: 'KGX',
+        destination_crs: 'EDB',
+        travel_date: '2026-01-20',
+        status: 'pending',
+        segments: [
+          {
+            id: 'segment-001',
+            journey_id: E2E_UUIDS.JOURNEY_RID_001,
+            sequence: 1,
+            rid: '202601200800999',
+            origin_crs: 'KGX',
+            destination_crs: 'EDB',
+            scheduled_departure: '2026-01-20T08:00:00Z',
+            scheduled_arrival: '2026-01-20T12:30:00Z',
+            toc_code: 'GR',
+          },
+        ],
+      };
+
+      mockJourneyMatcherClient.getJourneyWithSegments = vi.fn().mockResolvedValue(mockJourneyWithSegments);
+      mockJourneyMatcherClient.extractRidsFromSegments = vi.fn().mockReturnValue(['202601200800999']);
 
       const journey = await journeyRepository.create({
         user_id: E2E_UUIDS.USER_RID_001,
@@ -710,10 +743,32 @@ describe('End-to-End Delay Detection Workflow', () => {
     it('should retry RID resolution if not yet available', async () => {
       vi.setSystemTime(new Date('2026-01-18T10:00:00Z'));
 
-      mockDarwinClient.resolveRid = vi.fn().mockResolvedValue({
-        rid: null,
-        found: false,
-      });
+      // TD-DELAY-001: RID resolution now uses JourneyMatcherClient, not DarwinIngestorClient
+      // Mock getJourneyWithSegments to return a journey with segments that have no RIDs yet
+      const mockJourneyWithSegments: JourneyWithSegments = {
+        id: E2E_UUIDS.JOURNEY_RIDRETRY_001,
+        user_id: E2E_UUIDS.USER_RIDRETRY_001,
+        origin_crs: 'KGX',
+        destination_crs: 'EDB',
+        travel_date: '2026-01-20',
+        status: 'pending',
+        segments: [
+          {
+            id: 'segment-001',
+            journey_id: E2E_UUIDS.JOURNEY_RIDRETRY_001,
+            sequence: 1,
+            rid: null, // No RID resolved yet
+            origin_crs: 'KGX',
+            destination_crs: 'EDB',
+            scheduled_departure: '2026-01-20T08:00:00Z',
+            scheduled_arrival: '2026-01-20T12:30:00Z',
+            toc_code: 'GR',
+          },
+        ],
+      };
+
+      mockJourneyMatcherClient.getJourneyWithSegments = vi.fn().mockResolvedValue(mockJourneyWithSegments);
+      mockJourneyMatcherClient.extractRidsFromSegments = vi.fn().mockReturnValue([]); // No RIDs
 
       const journey = await journeyRepository.create({
         user_id: E2E_UUIDS.USER_RIDRETRY_001,

@@ -12,13 +12,6 @@ interface DarwinIngestorClientConfig {
   timeout?: number;
 }
 
-interface RidResolutionParams {
-  serviceDate: string;
-  origin: string;
-  destination: string;
-  scheduledDeparture: string;
-}
-
 export class DarwinIngestorClient {
   private baseUrl: string;
   private timeout: number;
@@ -58,49 +51,6 @@ export class DarwinIngestorClient {
 
       const data = await response.json() as { services?: DarwinDelayInfo[] };
       return data.services || [];
-    } catch (error) {
-      clearTimeout(timeoutId);
-      if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error('Darwin API request timeout');
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Resolve a journey to its RID based on service parameters
-   */
-  async resolveRid(params: RidResolutionParams): Promise<string | null> {
-    const url = `${this.baseUrl}/api/v1/resolve-rid`;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
-
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          service_date: params.serviceDate,
-          origin_crs: params.origin,
-          destination_crs: params.destination,
-          scheduled_departure: params.scheduledDeparture,
-        }),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        if (response.status === 404) {
-          return null;
-        }
-        throw new Error(`Darwin API error: ${response.status} ${response.statusText}`);
-      }
-
-      const data = await response.json() as { rid?: string };
-      return data.rid || null;
     } catch (error) {
       clearTimeout(timeoutId);
       if (error instanceof Error && error.name === 'AbortError') {

@@ -18,12 +18,14 @@ import { JourneyRepository } from '../repositories/journey-repository.js';
 import { DelayAlertRepository } from '../repositories/delay-alert-repository.js';
 import { DarwinIngestorClient } from '../clients/darwin-ingestor.js';
 import { EligibilityEngineClient } from '../clients/eligibility-engine.js';
+import { JourneyMatcherClient } from '../clients/journey-matcher.js';
 import { MonitoredJourney } from '../types.js';
 
 interface DelayTrackerServiceConfig {
   pool: Pool;
   darwinClient: DarwinIngestorClient;
   eligibilityClient?: EligibilityEngineClient;
+  journeyMatcherClient?: JourneyMatcherClient;
   journeyRepository?: JourneyRepository;
   delayAlertRepository: DelayAlertRepository;
   journeyMonitor: JourneyMonitor;
@@ -61,6 +63,7 @@ export class DelayTrackerService {
   private pool: Pool;
   private darwinClient: DarwinIngestorClient;
   private eligibilityClient?: EligibilityEngineClient;
+  private journeyMatcherClient?: JourneyMatcherClient;
   private journeyRepository?: JourneyRepository;
   private delayAlertRepository: DelayAlertRepository;
   private journeyMonitor: JourneyMonitor;
@@ -72,6 +75,7 @@ export class DelayTrackerService {
     this.pool = config.pool;
     this.darwinClient = config.darwinClient;
     this.eligibilityClient = config.eligibilityClient;
+    this.journeyMatcherClient = config.journeyMatcherClient;
     this.journeyRepository = config.journeyRepository;
     this.delayAlertRepository = config.delayAlertRepository;
     this.journeyMonitor = config.journeyMonitor;
@@ -180,33 +184,40 @@ export class DelayTrackerService {
       }
     }
 
-    // Resolve RIDs for pending journeys
+    // Resolve RIDs for pending journeys using JourneyMatcherClient
+    // Per TD-DELAY-001: RIDs should be obtained from journey-matcher segments, not from darwin-ingestor
     for (const journey of pendingRidJourneys) {
       try {
-        // Check if darwin client has resolveRid method
-        if (typeof this.darwinClient.resolveRid === 'function') {
-          const result = await this.darwinClient.resolveRid({
-            serviceDate: journey.service_date,
-            origin: journey.origin_crs,
-            destination: journey.destination_crs,
-            scheduledDeparture: journey.scheduled_departure instanceof Date
-              ? journey.scheduled_departure.toISOString()
-              : journey.scheduled_departure,
-          });
+        // Use JourneyMatcherClient to get journey with segments (which contain RIDs)
+        if (this.journeyMatcherClient) {
+          const journeyWithSegments = await this.journeyMatcherClient.getJourneyWithSegments(
+            journey.journey_id
+          );
 
-          // Handle both object response and string response
-          const rid = typeof result === 'object' && result !== null
-            ? (result as { rid?: string; found?: boolean }).rid
-            : result;
+          if (journeyWithSegments && journeyWithSegments.segments.length > 0) {
+            // Extract RIDs from segments
+            const rids = this.journeyMatcherClient.extractRidsFromSegments(
+              journeyWithSegments.segments
+            );
 
-          if (rid) {
-            await this.journeyMonitor.resolveRid(journey.id!, rid);
-            // RID resolved - journey will be checked for delays in next cycle
-            // Don't add to activeJourneys in this cycle as the journey just transitioned to 'active'
+            if (rids.length > 0) {
+              // Use the first RID for now (single-segment journeys)
+              // TODO: For multi-segment journeys, store all RIDs or the primary one
+              const rid = rids[0];
+              await this.journeyMonitor.resolveRid(journey.id!, rid);
+              // RID resolved - journey will be checked for delays in next cycle
+              // Don't add to activeJourneys in this cycle as the journey just transitioned to 'active'
+            } else {
+              // No RIDs resolved yet in segments, schedule retry
+              await this.journeyMonitor.updateLastChecked([journey.id!]);
+            }
           } else {
-            // RID not found, schedule retry in 5 minutes
+            // Journey not found or has no segments, schedule retry
             await this.journeyMonitor.updateLastChecked([journey.id!]);
           }
+        } else {
+          // JourneyMatcherClient not configured, skip RID resolution
+          await this.journeyMonitor.updateLastChecked([journey.id!]);
         }
       } catch (error) {
         console.error(`Failed to resolve RID for journey ${journey.id}:`, error);
