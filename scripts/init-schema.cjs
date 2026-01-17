@@ -34,4 +34,12 @@ async function initSchema() {
   }
 }
 
-initSchema();
+initSchema()
+  .then(() => {
+    console.log('[init-schema] Completed successfully');
+    process.exit(0);
+  })
+  .catch((err) => {
+    console.error('[init-schema] Unhandled error:', err);
+    process.exit(1);
+  });
