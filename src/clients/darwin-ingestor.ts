@@ -70,27 +70,40 @@ export class DarwinIngestorClient {
     origin_crs: string;
     destination_crs: string;
   }): Promise<DarwinDelayInfo> {
-    const url = `${this.baseUrl}/api/v1/delays/${params.rid}?service_date=${params.service_date}`;
+    const url = `${this.baseUrl}/api/v1/delays`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
     try {
       const response = await fetch(url, {
-        method: 'GET',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ rids: [params.rid] }),
         signal: controller.signal,
       });
 
       clearTimeout(timeoutId);
 
       if (!response.ok) {
-        if (response.status === 404) {
-          throw new Error('Darwin service not found: 404');
-        }
         throw new Error(`Darwin API error: ${response.status} ${response.statusText}`);
       }
 
-      const data = await response.json() as DarwinDelayInfo;
-      return data;
+      const data = await response.json() as { services: DarwinDelayInfo[] };
+
+      // If no services found, return zero-delay sentinel
+      if (!data.services || data.services.length === 0) {
+        return {
+          rid: params.rid,
+          delay_minutes: 0,
+          is_cancelled: false,
+          delay_reasons: null,
+        };
+      }
+
+      // Return first service
+      return data.services[0];
     } catch (error) {
       clearTimeout(timeoutId);
       if (error instanceof Error && error.name === 'AbortError') {
