@@ -233,7 +233,7 @@ export class JourneyConfirmedHandler {
   private async createDelayAlert(
     payload: JourneyConfirmedPayload,
     delayInfo: { delay_minutes: number; is_cancelled: boolean; delay_reasons?: Record<string, unknown> | null },
-    rid: string
+    rid: string | undefined
   ): Promise<void> {
     const serviceDate = payload.departure_datetime.split('T')[0];
     const scheduledDeparture = new Date(payload.departure_datetime);
@@ -244,7 +244,7 @@ export class JourneyConfirmedHandler {
     const monitoredJourney = await this.journeyRepository.create({
       journey_id: payload.journey_id,
       user_id: payload.user_id,
-      rid: rid,
+      rid: rid || 'UNKNOWN',
       service_date: serviceDate,
       origin_crs: payload.origin_crs,
       destination_crs: payload.destination_crs,
@@ -256,6 +256,10 @@ export class JourneyConfirmedHandler {
     });
 
     // Create delay alert with real monitored_journey_id
+    if (!monitoredJourney.id) {
+      throw new Error('Failed to create monitored_journey: no ID returned');
+    }
+
     await this.delayAlertRepository.create({
       monitored_journey_id: monitoredJourney.id,
       delay_minutes: delayInfo.delay_minutes,
