@@ -30,8 +30,8 @@ export class OutboxRepository {
 
     const query = `
       INSERT INTO ${this.schema}.${this.table} (
-        event_type, aggregate_type, aggregate_id, payload, status, retry_count
-      ) VALUES ($1, $2, $3, $4, $5, $6)
+        event_type, aggregate_type, aggregate_id, payload, correlation_id, status, retry_count
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING *
     `;
 
@@ -40,6 +40,7 @@ export class OutboxRepository {
       event.aggregate_type,
       event.aggregate_id,
       JSON.stringify(event.payload),
+      event.correlation_id || null,
       'pending',
       0,
     ];
@@ -174,6 +175,7 @@ export class OutboxRepository {
       aggregate_type: row.aggregate_type as string,
       aggregate_id: row.aggregate_id as string,
       payload: row.payload as Record<string, unknown>,
+      correlation_id: row.correlation_id as string | undefined,
       status: row.status as OutboxStatus,
       retry_count: row.retry_count as number,
       error_message: row.error_message as string | null,

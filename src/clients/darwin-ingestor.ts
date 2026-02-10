@@ -59,4 +59,44 @@ export class DarwinIngestorClient {
       throw error;
     }
   }
+
+  /**
+   * Get delay information for a single journey
+   * Used by journey.confirmed event handler
+   */
+  async getDelayInfo(params: {
+    rid: string;
+    service_date: string;
+    origin_crs: string;
+    destination_crs: string;
+  }): Promise<DarwinDelayInfo> {
+    const url = `${this.baseUrl}/api/v1/delays/${params.rid}?service_date=${params.service_date}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          throw new Error('Darwin service not found: 404');
+        }
+        throw new Error(`Darwin API error: ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json() as DarwinDelayInfo;
+      return data;
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error('Request timeout');
+      }
+      throw error;
+    }
+  }
 }

@@ -32,6 +32,7 @@ const VALID_TRANSITIONS: Record<MonitoringStatus, MonitoringStatus[]> = {
   delayed: ['completed', 'cancelled'],
   completed: [], // Terminal state
   cancelled: [], // Terminal state
+  darwin_unavailable: [], // Terminal state
 };
 
 export class JourneyMonitor {

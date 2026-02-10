@@ -165,40 +165,49 @@ Darwin XML (RID) → timetable-loader → GTFS (trip_id=RID) → otp-router → 
 | Owner | Blake (darwin-ingestor) |
 | Sprint Target | Q1 2026 |
 | Blocking | delay-tracker cron job |
+| **Status** | **RESOLVED** (2026-01-17) |
 
 **Problem**: The delay-tracker service expects darwin-ingestor to provide a `POST /api/v1/delays` endpoint for batch lookup of delay information by RID. This endpoint needs to be verified/implemented.
 
-**Expected Contract**:
+**Resolution**: Implemented `POST /api/v1/delays` endpoint in darwin-ingestor.
+
+**Verified Contract**:
 ```
 POST /api/v1/delays
 Content-Type: application/json
 
 Request:
 {
-  "rids": ["202601171234567", "202601171234568"]
+  "rids": ["202601177962802", "202601178705516"]
 }
 
 Response:
 {
   "services": [
     {
-      "rid": "202601171234567",
-      "delay_minutes": 25,
-      "cancelled": false,
-      "delay_reason": "Late departure"
+      "rid": "202601177962802",
+      "delay_minutes": 35,
+      "is_cancelled": false,
+      "delay_reasons": null
+    },
+    {
+      "rid": "202601178705516",
+      "delay_minutes": 37,
+      "is_cancelled": false,
+      "delay_reasons": [{"code": "637"}]
     }
   ]
 }
 ```
 
-**Impact**: delay-tracker's cron job cannot fetch delay information without this endpoint.
+**Changes Deployed**:
+- NEW: `/src/api/batch-delay-routes.ts` - POST /api/v1/delays batch endpoint
+- MODIFIED: `/src/repositories/delay-repository.ts` - Added `getDelaysByRIDs()` method
+- MODIFIED: `/src/index.ts` - Mounted batch routes at `/api/v1/delays`
 
-**Recommended Fix**:
-1. Verify darwin-ingestor has `POST /api/v1/delays` endpoint implemented
-2. If missing, implement the endpoint to query `darwin_ingestor.delays` table by RID
-3. Document the API contract in OpenAPI spec
+**Deployment**: darwin-ingestor deployment `67c23761-08c1-4186-b45a-b76eb0bf7ce5` (SUCCESS)
 
-**Recorded in**: Notion > Architecture > Technical Debt Register > darwin-ingestor Service
+**Close-Out**: See `darwin-ingestor-prototype/docs/TD-5-CLOSEOUT-TD-DELAY-002.md`
 
 ---
 
@@ -299,15 +308,24 @@ Response:
 
 ## Next Steps
 
-1. **TD-DELAY-001 Remediation (BLOCKING)**:
-   - Remove/deprecate `DarwinIngestorClient.resolveRid()` method
-   - Add journey-matcher API call to retrieve journey segments with RIDs
-   - Add HTTP client tests using msw/nock
-2. **TD-DELAY-002 Remediation (BLOCKING)**:
-   - Verify/implement darwin-ingestor `POST /api/v1/delays` endpoint
-   - Document API contract in OpenAPI spec
-3. **Integration Testing**: Verify end-to-end flow when eligibility-engine is deployed
+1. ~~**TD-DELAY-001 Remediation (BLOCKING)**~~ - **RESOLVED 2026-01-17**
+   - Removed `DarwinIngestorClient.resolveRid()` method
+   - Added `JourneyMatcherClient` for RID retrieval
+   - Added 66 HTTP client tests using msw/nock
+   - See: `delay-tracker/docs/phases/TD-5-CLOSEOUT-TD-DELAY-001.md`
+
+2. ~~**TD-DELAY-002 Remediation (BLOCKING)**~~ - **RESOLVED 2026-01-17**
+   - Implemented `POST /api/v1/delays` endpoint in darwin-ingestor
+   - API contract verified in production
+   - See: `darwin-ingestor-prototype/docs/TD-5-CLOSEOUT-TD-DELAY-002.md`
+
+3. **Integration Testing** (UNBLOCKED): Verify end-to-end delay monitoring flow
+   - Both TD items resolved - cron job can now execute fully
+   - Test: Register journey -> Wait for delay -> Verify alert created
+
 4. **Monitoring**: Set up Grafana alerts for cron job failures
+
+5. **OpenAPI Documentation**: Document darwin-ingestor `POST /api/v1/delays` in OpenAPI spec
 
 ---
 

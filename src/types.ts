@@ -6,7 +6,8 @@
  */
 
 // Monitoring status for journeys
-export type MonitoringStatus = 'pending_rid' | 'active' | 'delayed' | 'completed' | 'cancelled';
+// NOTE: 'darwin_unavailable' added by migration 1770714617404_add-darwin-unavailable-status.cjs
+export type MonitoringStatus = 'pending_rid' | 'active' | 'delayed' | 'completed' | 'cancelled' | 'darwin_unavailable';
 
 // Outbox event status
 export type OutboxStatus = 'pending' | 'processed' | 'failed';
@@ -58,6 +59,7 @@ export interface OutboxEvent {
   aggregate_type: string;
   aggregate_id: string;
   payload: Record<string, unknown>;
+  correlation_id?: string;
   status?: OutboxStatus;
   retry_count?: number;
   error_message?: string | null;
