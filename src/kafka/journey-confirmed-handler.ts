@@ -14,7 +14,6 @@ import { JourneyRepository } from '../repositories/journey-repository.js';
 import { DelayAlertRepository } from '../repositories/delay-alert-repository.js';
 import { OutboxRepository } from '../repositories/outbox-repository.js';
 import { DarwinIngestorClient } from '../clients/darwin-ingestor.js';
-import { v4 as uuidv4 } from 'uuid';
 
 interface JourneySegment {
   segment_order: number;
@@ -147,27 +146,15 @@ export class JourneyConfirmedHandler {
     const firstSegment = payload.segments[0];
     const serviceDate = payload.departure_datetime.split('T')[0];
 
+    let delayInfo;
     try {
       // AC-5: Query Darwin for delay info
-      const delayInfo = await this.darwinClient.getDelayInfo({
+      delayInfo = await this.darwinClient.getDelayInfo({
         rid: firstSegment.rid,
         service_date: serviceDate,
         origin_crs: payload.origin_crs,
         destination_crs: payload.destination_crs,
       });
-
-      // Delay threshold: 15 minutes
-      const delayMinutes = delayInfo.delay_minutes;
-      const isCancelled = delayInfo.is_cancelled;
-      const exceedsThreshold = delayMinutes >= 15 || isCancelled;
-
-      if (exceedsThreshold) {
-        // Create delay alert and publish delay.detected event
-        await this.createDelayAlert(payload, delayInfo, firstSegment.rid);
-      } else {
-        // Publish delay.not-detected event (reason: below_threshold)
-        await this.publishDelayNotDetected(payload, 'below_threshold');
-      }
     } catch (error) {
       // AC-7: Handle Darwin unavailability gracefully
       // Do NOT throw - publish delay.not-detected with darwin_unavailable reason
@@ -178,6 +165,20 @@ export class JourneyConfirmedHandler {
         stack: error instanceof Error ? error.stack : undefined,
       });
       await this.publishDelayNotDetected(payload, 'darwin_unavailable');
+      return;
+    }
+
+    // Delay threshold: 15 minutes
+    const delayMinutes = delayInfo.delay_minutes;
+    const isCancelled = delayInfo.is_cancelled;
+    const exceedsThreshold = delayMinutes >= 15 || isCancelled;
+
+    if (exceedsThreshold) {
+      // Create delay alert and publish delay.detected event
+      await this.createDelayAlert(payload, delayInfo, firstSegment.rid);
+    } else {
+      // Publish delay.not-detected event (reason: below_threshold)
+      await this.publishDelayNotDetected(payload, 'below_threshold');
     }
   }
 
@@ -234,12 +235,29 @@ export class JourneyConfirmedHandler {
     delayInfo: { delay_minutes: number; is_cancelled: boolean; delay_reasons?: Record<string, unknown> | null },
     rid: string
   ): Promise<void> {
-    // Generate a temporary monitored_journey_id (since we're not creating monitored_journeys for historic)
-    const tempJourneyId = uuidv4();
+    const serviceDate = payload.departure_datetime.split('T')[0];
+    const scheduledDeparture = new Date(payload.departure_datetime);
+    const scheduledArrival = new Date(payload.arrival_datetime);
 
-    // Create delay alert
+    // Create monitored_journeys row with monitoring_status='completed'
+    // This is required for the FK constraint on delay_alerts.monitored_journey_id
+    const monitoredJourney = await this.journeyRepository.create({
+      journey_id: payload.journey_id,
+      user_id: payload.user_id,
+      rid: rid,
+      service_date: serviceDate,
+      origin_crs: payload.origin_crs,
+      destination_crs: payload.destination_crs,
+      scheduled_departure: scheduledDeparture,
+      scheduled_arrival: scheduledArrival,
+      monitoring_status: 'completed',
+      last_checked_at: null,
+      next_check_at: null,
+    });
+
+    // Create delay alert with real monitored_journey_id
     await this.delayAlertRepository.create({
-      monitored_journey_id: tempJourneyId,
+      monitored_journey_id: monitoredJourney.id,
       delay_minutes: delayInfo.delay_minutes,
       delay_reasons: delayInfo.delay_reasons || null,
       is_cancellation: delayInfo.is_cancelled,

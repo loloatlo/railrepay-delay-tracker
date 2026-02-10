@@ -101,7 +101,11 @@ describe('TD-DELAY-TRACKER-002: journey.confirmed Event Handler', () => {
   beforeEach(() => {
     // Mock repositories
     mockJourneyRepository = {
-      create: vi.fn(),
+      create: vi.fn().mockResolvedValue({
+        id: 'monitored-journey-uuid-mock',
+        journey_id: 'test-journey-id',
+        monitoring_status: 'completed',
+      }),
       findByJourneyId: vi.fn().mockResolvedValue(null), // No duplicate by default
       update: vi.fn(),
     } as unknown as JourneyRepository;
