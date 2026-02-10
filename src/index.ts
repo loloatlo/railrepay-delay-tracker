@@ -26,6 +26,8 @@ import { JourneyMonitor } from './services/journey-monitor.js';
 import { JourneyRepository } from './repositories/journey-repository.js';
 import { DarwinIngestorClient } from './clients/darwin-ingestor.js';
 import { DelayDetector } from './services/delay-detector.js';
+import { EventConsumer } from './consumers/event-consumer.js';
+import { createConsumerConfig, ConsumerConfigError } from './consumers/config.js';
 
 // Configuration from environment
 const config = {
@@ -109,6 +111,9 @@ const healthController = new HealthController({
   version: process.env.npm_package_version || '0.1.0',
 });
 
+// Event consumer instance (initialized in start() if Kafka config available)
+let eventConsumer: EventConsumer | null = null;
+
 // Health endpoints
 app.get('/health', async (_req: Request, res: Response) => {
   const response = await healthController.getHealth();
@@ -128,13 +133,26 @@ app.get('/health/ready', async (_req: Request, res: Response) => {
 // Metrics endpoint (basic for now - can be enhanced with prom-client)
 app.get('/metrics', async (_req: Request, res: Response) => {
   const cronMetrics = cronScheduler.getMetrics();
-  res.json({
+  const response: any = {
     cron: {
       running: cronScheduler.isRunning(),
       executing: cronScheduler.isExecuting(),
       ...cronMetrics,
     },
-  });
+  };
+
+  // Include consumer stats if consumer is initialized
+  if (eventConsumer) {
+    const consumerStats = eventConsumer.getStats();
+    response.consumer = {
+      running: eventConsumer.isRunning(),
+      processedCount: consumerStats.processedCount,
+      errorCount: consumerStats.errorCount,
+      lastProcessedAt: consumerStats.lastProcessedAt,
+    };
+  }
+
+  res.json(response);
 });
 
 // Start server
@@ -155,6 +173,49 @@ async function start() {
       console.log(`[delay-tracker] Cron enabled: ${config.cron.enabled}`);
     });
 
+    // Start Kafka event consumer (TD-DELAY-TRACKER-003)
+    // Graceful degradation: if Kafka env vars missing or connection fails, continue with cron only
+    try {
+      const consumerConfig = createConsumerConfig();
+
+      // Create simple console logger for EventConsumer (follows journey-matcher pattern)
+      const logger = {
+        info: (message: string, meta?: Record<string, unknown>) => {
+          console.log(`[delay-tracker] ${message}`, meta || '');
+        },
+        error: (message: string, meta?: Record<string, unknown>) => {
+          console.error(`[delay-tracker] ${message}`, meta || '');
+        },
+        warn: (message: string, meta?: Record<string, unknown>) => {
+          console.warn(`[delay-tracker] ${message}`, meta || '');
+        },
+        debug: (message: string, meta?: Record<string, unknown>) => {
+          console.debug(`[delay-tracker] ${message}`, meta || '');
+        },
+      };
+
+      eventConsumer = new EventConsumer({
+        ...consumerConfig,
+        db: pool,
+        logger,
+      });
+
+      console.log('[delay-tracker] Starting Kafka event consumer...', {
+        groupId: consumerConfig.groupId,
+        brokers: consumerConfig.brokers,
+      });
+      await eventConsumer.start();
+      console.log('[delay-tracker] Kafka event consumer started successfully');
+    } catch (error) {
+      if (error instanceof ConsumerConfigError) {
+        // Missing Kafka config - log warning but continue (cron still works)
+        console.warn('[delay-tracker] Kafka consumer not started - missing configuration:', error.message);
+      } else {
+        // Other errors - log but don't fail startup (graceful degradation)
+        console.error('[delay-tracker] Failed to start Kafka consumer:', error instanceof Error ? error.message : String(error));
+      }
+    }
+
     // Start cron scheduler if enabled
     if (config.cron.enabled) {
       await cronScheduler.start();
@@ -170,20 +231,27 @@ async function start() {
 async function shutdown(signal: string) {
   console.log(`[delay-tracker] ${signal} received, shutting down gracefully`);
 
-  // Stop cron scheduler
+  // Stop cron scheduler FIRST
   if (cronScheduler.isRunning()) {
     await cronScheduler.stop();
     console.log('[delay-tracker] Cron scheduler stopped');
   }
 
-  // Close HTTP server
+  // Stop event consumer SECOND (TD-DELAY-TRACKER-003)
+  if (eventConsumer) {
+    console.log('[delay-tracker] Stopping Kafka event consumer...');
+    await eventConsumer.stop();
+    console.log('[delay-tracker] Kafka event consumer stopped');
+  }
+
+  // Close HTTP server THIRD
   if (server) {
     server.close(() => {
       console.log('[delay-tracker] HTTP server closed');
     });
   }
 
-  // Close database pool
+  // Close database pool LAST
   await pool.end();
   console.log('[delay-tracker] Database pool closed');
 

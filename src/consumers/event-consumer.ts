@@ -1,0 +1,251 @@
+/**
+ * TD-DELAY-TRACKER-003: Event Consumer Wrapper
+ *
+ * Main EventConsumer wrapper that manages KafkaConsumer lifecycle
+ * and wires up JourneyConfirmedHandler to journey.confirmed topic.
+ *
+ * Pattern reference: journey-matcher/src/consumers/event-consumer.ts
+ */
+
+import { Pool } from 'pg';
+import { KafkaConsumer } from '@railrepay/kafka-client';
+import { JourneyConfirmedHandler } from '../kafka/journey-confirmed-handler.js';
+import { JourneyRepository } from '../repositories/journey-repository.js';
+import { DelayAlertRepository } from '../repositories/delay-alert-repository.js';
+import { OutboxRepository } from '../repositories/outbox-repository.js';
+import { DarwinIngestorClient } from '../clients/darwin-ingestor.js';
+
+/**
+ * Logger interface for dependency injection
+ */
+interface Logger {
+  info: (message: string, meta?: Record<string, unknown>) => void;
+  error: (message: string, meta?: Record<string, unknown>) => void;
+  warn: (message: string, meta?: Record<string, unknown>) => void;
+  debug: (message: string, meta?: Record<string, unknown>) => void;
+}
+
+/**
+ * EventConsumer configuration
+ */
+export interface EventConsumerConfig {
+  serviceName: string;
+  brokers: string[];
+  username: string;
+  password: string;
+  groupId: string;
+  db: Pool;
+  logger: Logger;
+  ssl?: boolean;
+}
+
+/**
+ * Handler statistics
+ */
+interface HandlerStats {
+  processedCount: number;
+  errorCount: number;
+  lastProcessedAt: Date | null;
+}
+
+/**
+ * Consumer statistics
+ */
+interface ConsumerStats {
+  processedCount: number;
+  errorCount: number;
+  lastProcessedAt: Date | null;
+  isRunning: boolean;
+  handlers: {
+    'journey.confirmed': HandlerStats;
+  };
+}
+
+/**
+ * EventConsumer class
+ */
+export class EventConsumer {
+  private kafkaConsumer: KafkaConsumer;
+  private db: Pool;
+  private logger: Logger;
+  private started: boolean = false;
+
+  // Handler
+  private journeyConfirmedHandler: JourneyConfirmedHandler;
+
+  // Stats tracking
+  private stats: ConsumerStats = {
+    processedCount: 0,
+    errorCount: 0,
+    lastProcessedAt: null,
+    isRunning: false,
+    handlers: {
+      'journey.confirmed': { processedCount: 0, errorCount: 0, lastProcessedAt: null },
+    },
+  };
+
+  constructor(config: EventConsumerConfig) {
+    this.db = config.db;
+    this.logger = config.logger;
+
+    // Create KafkaConsumer with config
+    this.kafkaConsumer = new KafkaConsumer({
+      serviceName: config.serviceName,
+      brokers: config.brokers,
+      username: config.username,
+      password: config.password,
+      groupId: config.groupId,
+      logger: config.logger,
+      ssl: config.ssl,
+    });
+
+    // Get DARWIN_INGESTOR_URL from env (required for handler)
+    const darwinIngestorUrl = process.env.DARWIN_INGESTOR_URL || 'http://darwin-ingestor:3000';
+
+    // Create handler dependencies
+    const journeyRepository = new JourneyRepository({ pool: this.db });
+    const delayAlertRepository = new DelayAlertRepository({ pool: this.db });
+    const outboxRepository = new OutboxRepository({ pool: this.db });
+    const darwinClient = new DarwinIngestorClient({ baseUrl: darwinIngestorUrl });
+
+    // Create handler
+    this.journeyConfirmedHandler = new JourneyConfirmedHandler({
+      journeyRepository,
+      delayAlertRepository,
+      outboxRepository,
+      darwinClient,
+    });
+  }
+
+  /**
+   * Start the event consumer
+   */
+  async start(): Promise<void> {
+    this.logger.info('Connecting to Kafka', {
+      serviceName: 'delay-tracker',
+    });
+
+    try {
+      // Connect to Kafka
+      await this.kafkaConsumer.connect();
+
+      this.logger.info('Successfully connected to Kafka', {
+        serviceName: 'delay-tracker',
+      });
+
+      // Subscribe to journey.confirmed topic with handler
+      this.logger.info('Subscribing to topic', { topic: 'journey.confirmed' });
+      await this.kafkaConsumer.subscribe('journey.confirmed', async (message) => {
+        try {
+          // Parse the Kafka message value to get the actual payload
+          if (!message.message.value) {
+            this.logger.error('Empty message value received', {
+              topic: message.topic,
+              offset: message.message.offset,
+            });
+            return;
+          }
+
+          let payload: unknown;
+          try {
+            payload = JSON.parse(message.message.value.toString());
+          } catch (parseError) {
+            this.logger.error('Failed to parse message payload', {
+              error: parseError instanceof Error ? parseError.message : String(parseError),
+              topic: message.topic,
+              offset: message.message.offset,
+            });
+            return;
+          }
+
+          // Call handler with parsed payload
+          await this.journeyConfirmedHandler.handle(payload as any);
+          this.stats.handlers['journey.confirmed'].processedCount++;
+          this.stats.handlers['journey.confirmed'].lastProcessedAt = new Date();
+          this.stats.processedCount++;
+          this.stats.lastProcessedAt = new Date();
+        } catch (error) {
+          this.stats.handlers['journey.confirmed'].errorCount++;
+          this.stats.errorCount++;
+          throw error;
+        }
+      });
+
+      // Start consuming from all subscribed topics
+      this.logger.info('Starting Kafka consumer for all subscribed topics', {
+        topics: this.kafkaConsumer.getSubscribedTopics(),
+      });
+      await this.kafkaConsumer.start();
+
+      this.started = true;
+      this.stats.isRunning = true;
+    } catch (error) {
+      this.logger.error('Failed to connect to Kafka', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Stop the event consumer
+   */
+  async stop(): Promise<void> {
+    if (!this.started && !this.kafkaConsumer.isConsumerRunning()) {
+      this.logger.warn('Consumer not running, nothing to stop', {
+        serviceName: 'delay-tracker',
+      });
+      return;
+    }
+
+    this.logger.info('Shutting down Kafka consumer', {
+      serviceName: 'delay-tracker',
+    });
+
+    try {
+      await this.kafkaConsumer.disconnect();
+      this.started = false;
+      this.stats.isRunning = false;
+
+      this.logger.info('Successfully disconnected from Kafka', {
+        serviceName: 'delay-tracker',
+      });
+    } catch (error) {
+      this.logger.error('Error during shutdown', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      this.started = false;
+      this.stats.isRunning = false;
+      // Don't throw - graceful shutdown should not fail
+    }
+  }
+
+  /**
+   * Get consumer statistics
+   */
+  getStats(): ConsumerStats {
+    // Update isRunning from kafka consumer
+    this.stats.isRunning = this.kafkaConsumer.isConsumerRunning();
+
+    // Get stats from kafka consumer and merge
+    const kafkaStats = this.kafkaConsumer.getStats();
+    return {
+      ...this.stats,
+      processedCount: this.stats.processedCount || kafkaStats.processedCount,
+      errorCount: this.stats.errorCount || kafkaStats.errorCount,
+      isRunning: this.stats.isRunning,
+    };
+  }
+
+  /**
+   * Check if consumer is running
+   */
+  isRunning(): boolean {
+    // Use internal state combined with kafka consumer state
+    // When started is false, return false regardless of kafka consumer state
+    if (!this.started) {
+      return false;
+    }
+    return this.kafkaConsumer.isConsumerRunning();
+  }
+}
