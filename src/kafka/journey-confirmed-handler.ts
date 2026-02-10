@@ -171,6 +171,12 @@ export class JourneyConfirmedHandler {
     } catch (error) {
       // AC-7: Handle Darwin unavailability gracefully
       // Do NOT throw - publish delay.not-detected with darwin_unavailable reason
+      console.error('[delay-tracker] Darwin API call failed for historic journey', {
+        journey_id: payload.journey_id,
+        rid: firstSegment.rid,
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
       await this.publishDelayNotDetected(payload, 'darwin_unavailable');
     }
   }
