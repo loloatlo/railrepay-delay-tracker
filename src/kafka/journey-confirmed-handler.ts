@@ -280,6 +280,7 @@ export class JourneyConfirmedHandler {
         user_id: payload.user_id,
         delay_minutes: delayInfo.delay_minutes,
         is_cancellation: delayInfo.is_cancelled,
+        toc_code: payload.toc_code, // AC-10: Add toc_code to delay.detected payload
       },
       correlation_id: payload.correlation_id,
     });
