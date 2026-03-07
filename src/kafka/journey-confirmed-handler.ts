@@ -36,6 +36,9 @@ export interface JourneyConfirmedPayload {
   toc_code: string;
   segments: JourneySegment[];
   correlation_id: string;
+  ticket_fare_pence?: number | null;
+  ticket_class?: string | null;
+  ticket_type?: string | null;
 }
 
 interface JourneyConfirmedHandlerDeps {
@@ -281,6 +284,9 @@ export class JourneyConfirmedHandler {
         delay_minutes: delayInfo.delay_minutes,
         is_cancellation: delayInfo.is_cancelled,
         toc_code: payload.toc_code, // AC-10: Add toc_code to delay.detected payload
+        ticket_fare_pence: payload.ticket_fare_pence !== undefined ? payload.ticket_fare_pence : null,
+        ticket_class: payload.ticket_class ?? null,
+        ticket_type: payload.ticket_type ?? null,
       },
       correlation_id: payload.correlation_id,
     });
