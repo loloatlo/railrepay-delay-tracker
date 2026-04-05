@@ -6,6 +6,7 @@
  */
 
 import { DarwinDelayInfo } from '../types.js';
+import { stripGtfsPrefix } from '../utils/strip-gtfs-prefix.js';
 
 interface DarwinIngestorClientConfig {
   baseUrl: string;
@@ -29,6 +30,11 @@ export class DarwinIngestorClient {
       return [];
     }
 
+    // BL-179: Strip GTFS feed-index prefix (e.g. "1:202603117664795" → "202603117664795")
+    // Darwin Ingestor stores bare RIDs; prefixed lookups return empty results.
+    // Deduplicate after stripping in case prefix and bare form both appear in input.
+    const bareRids = [...new Set(rids.map((rid) => stripGtfsPrefix(rid) as string))];
+
     const url = `${this.baseUrl}/api/v1/delays`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
@@ -39,7 +45,7 @@ export class DarwinIngestorClient {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ rids }),
+        body: JSON.stringify({ rids: bareRids }),
         signal: controller.signal,
       });
 
@@ -70,6 +76,9 @@ export class DarwinIngestorClient {
     origin_crs: string;
     destination_crs: string;
   }): Promise<DarwinDelayInfo> {
+    // BL-179: Strip GTFS feed-index prefix before querying Darwin Ingestor
+    const bareRid = stripGtfsPrefix(params.rid) as string;
+
     const url = `${this.baseUrl}/api/v1/delays`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
@@ -80,7 +89,7 @@ export class DarwinIngestorClient {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ rids: [params.rid] }),
+        body: JSON.stringify({ rids: [bareRid] }),
         signal: controller.signal,
       });
 
@@ -93,9 +102,10 @@ export class DarwinIngestorClient {
       const data = await response.json() as { services: DarwinDelayInfo[] };
 
       // If no services found, return zero-delay sentinel
+      // BL-179: Use bareRid (stripped) for traceability - the prefix was not meaningful
       if (!data.services || data.services.length === 0) {
         return {
-          rid: params.rid,
+          rid: bareRid,
           delay_minutes: 0,
           is_cancelled: false,
           delay_reasons: null,
