@@ -149,6 +149,8 @@ app.get('/metrics', async (_req: Request, res: Response) => {
       processedCount: consumerStats.processedCount,
       errorCount: consumerStats.errorCount,
       lastProcessedAt: consumerStats.lastProcessedAt,
+      lastError: (consumerStats as any).lastError || null,
+      lastErrorAt: (consumerStats as any).lastErrorAt || null,
     };
   }
 
