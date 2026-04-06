@@ -209,10 +209,12 @@ export class JourneyConfirmedHandler {
       }
 
       // Darwin is reachable — invoke SequentialLegWalk with journey legs
-      const legs = payload.segments.map((seg) => ({
+      // Note: segment origin_crs/destination_crs may contain station NAMES (from OTP)
+      // rather than CRS codes. Use payload-level CRS codes for first origin and last dest.
+      const legs = payload.segments.map((seg, idx) => ({
         rid: seg.rid,
-        originCrs: seg.origin_crs,
-        destinationCrs: seg.destination_crs,
+        originCrs: idx === 0 ? payload.origin_crs : seg.origin_crs,
+        destinationCrs: idx === payload.segments.length - 1 ? payload.destination_crs : seg.destination_crs,
         scheduledArrival: seg.scheduled_arrival,
         scheduledDeparture: seg.scheduled_departure,
         connectionThresholdMinutes: null as null,
