@@ -194,9 +194,11 @@ export class SequentialLegWalk {
 
       // AC-13: If this is the final leg, compute and return the result
       if (isLastLeg) {
-        const delayMs =
-          new Date(actualArrival).getTime() - new Date(scheduledFinalArrival).getTime();
-        const delayMinutes = Math.round(delayMs / 60000);
+        // BL-181 fix: Darwin returns time-only strings for actual_arrival (e.g. "10:15"),
+        // NOT full ISO datetimes. new Date("10:15") produces NaN, breaking the timestamp
+        // subtraction. Instead, use the pre-computed delay_minutes from the DarwinStop
+        // which Darwin already calculated correctly at the stop level.
+        const delayMinutes = stopDelayMinutes;
 
         return {
           delay_minutes: delayMinutes,
