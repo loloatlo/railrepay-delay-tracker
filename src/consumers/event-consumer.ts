@@ -190,6 +190,13 @@ export class EventConsumer {
         } catch (error) {
           this.stats.handlers['journey.confirmed'].errorCount++;
           this.stats.errorCount++;
+          this.logger.error('Handler error for journey.confirmed', {
+            error: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined,
+          });
+          // Store last error for diagnostics via /metrics
+          (this.stats as any).lastError = error instanceof Error ? error.message : String(error);
+          (this.stats as any).lastErrorAt = new Date().toISOString();
           throw error;
         }
       });
