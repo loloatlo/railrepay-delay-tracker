@@ -102,6 +102,15 @@ export class JourneyConfirmedHandler {
    * Handle incoming journey.confirmed event
    */
   async handle(payload: JourneyConfirmedPayload): Promise<void> {
+    console.log('[delay-tracker] handle() called', {
+      journey_id: payload.journey_id,
+      rid: payload.segments?.[0]?.rid,
+      origin: payload.origin_crs,
+      destination: payload.destination_crs,
+      hasSLW: !!this.sequentialLegWalk,
+      hasGetServiceWithStops: !!(this.darwinClient as any).getServiceWithStops,
+    });
+
     // AC-2: Payload validation
     this.validatePayload(payload);
 
@@ -109,6 +118,7 @@ export class JourneyConfirmedHandler {
     const existingJourney = await this.journeyRepository.findByJourneyId(payload.journey_id);
     if (existingJourney) {
       // Already processed - skip to maintain idempotency
+      console.log('[delay-tracker] Duplicate journey, skipping', { journey_id: payload.journey_id });
       return;
     }
 
@@ -194,9 +204,17 @@ export class JourneyConfirmedHandler {
     //   2. Ensures the handler can fall back to legacy getDelayInfo when SLW returns
     //      assessment_pending / needs_manual_review.
     if (this.sequentialLegWalk && this.darwinClient.getServiceWithStops) {
+      console.log('[delay-tracker] SLW path entered', { rid: firstSegment.rid });
       // Check Darwin availability via getServiceWithStops
+      let darwinPreCheck: any;
       try {
-        await this.darwinClient.getServiceWithStops(firstSegment.rid);
+        darwinPreCheck = await this.darwinClient.getServiceWithStops(firstSegment.rid);
+        console.log('[delay-tracker] Darwin pre-check result', {
+          rid: firstSegment.rid,
+          status: darwinPreCheck?.status,
+          stopCount: darwinPreCheck?.stops?.length ?? 0,
+          delay_minutes: darwinPreCheck?.delay_minutes,
+        });
       } catch (error) {
         // Darwin is unavailable — publish darwin_unavailable (AC-W10 regression guard)
         console.error('[delay-tracker] Darwin API call failed (getServiceWithStops) for historic journey', {
@@ -222,13 +240,21 @@ export class JourneyConfirmedHandler {
 
       let slwResult: LegWalkResult | null = null;
       try {
+        console.log('[delay-tracker] Calling SLW.calculate', {
+          legCount: legs.length,
+          finalDestinationCrs: payload.destination_crs,
+          scheduledFinalArrival: payload.arrival_datetime,
+          legs: legs.map(l => ({ rid: l.rid, originCrs: l.originCrs, destinationCrs: l.destinationCrs })),
+        });
         slwResult = await this.sequentialLegWalk.calculate({
           legs,
           finalDestinationCrs: payload.destination_crs,
           scheduledFinalArrival: payload.arrival_datetime,
         });
+        console.log('[delay-tracker] SLW result', JSON.stringify(slwResult));
       } catch (_slwError) {
         // SLW threw — treat as assessment_pending and fall through to legacy path
+        console.error('[delay-tracker] SLW threw error', { error: _slwError instanceof Error ? _slwError.message : String(_slwError), stack: _slwError instanceof Error ? _slwError.stack : undefined });
         slwResult = null;
       }
 
