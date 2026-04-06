@@ -14,6 +14,13 @@ import { JourneyRepository } from '../repositories/journey-repository.js';
 import { DelayAlertRepository } from '../repositories/delay-alert-repository.js';
 import { OutboxRepository } from '../repositories/outbox-repository.js';
 import { DarwinIngestorClient } from '../clients/darwin-ingestor.js';
+import {
+  SequentialLegWalk,
+  type TiplocRepository,
+  type DarwinClient,
+  type OtpClient,
+  type LegWalkResult,
+} from '../services/sequential-leg-walk.js';
 
 interface JourneySegment {
   segment_order: number;
@@ -41,11 +48,21 @@ export interface JourneyConfirmedPayload {
   ticket_type?: string | null;
 }
 
+// BL-181 AC-W6: SequentialLegWalk dependencies accepted by the handler.
+// Two wiring options are supported:
+//   a) Pass a pre-built SequentialLegWalk instance via `sequentialLegWalk`
+//   b) Pass individual deps (tiplocRepository, darwinClient as DarwinClient, otpClient)
+//      and the handler builds a SequentialLegWalk internally
 interface JourneyConfirmedHandlerDeps {
   journeyRepository: JourneyRepository;
   delayAlertRepository: DelayAlertRepository;
   outboxRepository: OutboxRepository;
-  darwinClient: DarwinIngestorClient;
+  darwinClient: DarwinIngestorClient & Partial<DarwinClient>;
+  // Option a: pre-built SequentialLegWalk instance
+  sequentialLegWalk?: { calculate(params: { legs: { rid: string; originCrs: string; destinationCrs: string; scheduledArrival: string; scheduledDeparture: string; connectionThresholdMinutes: null }[]; finalDestinationCrs: string; scheduledFinalArrival: string }): Promise<LegWalkResult> };
+  // Option b: individual dependencies
+  tiplocRepository?: TiplocRepository;
+  otpClient?: OtpClient;
 }
 
 export class JourneyConfirmedHandler {
@@ -55,13 +72,30 @@ export class JourneyConfirmedHandler {
   private journeyRepository: JourneyRepository;
   private delayAlertRepository: DelayAlertRepository;
   private outboxRepository: OutboxRepository;
-  private darwinClient: DarwinIngestorClient;
+  private darwinClient: DarwinIngestorClient & Partial<DarwinClient>;
+  private sequentialLegWalk: { calculate(params: { legs: { rid: string; originCrs: string; destinationCrs: string; scheduledArrival: string; scheduledDeparture: string; connectionThresholdMinutes: null }[]; finalDestinationCrs: string; scheduledFinalArrival: string }): Promise<LegWalkResult> } | null;
 
   constructor(deps: JourneyConfirmedHandlerDeps) {
     this.journeyRepository = deps.journeyRepository;
     this.delayAlertRepository = deps.delayAlertRepository;
     this.outboxRepository = deps.outboxRepository;
     this.darwinClient = deps.darwinClient;
+
+    // BL-181 AC-W6: wire SequentialLegWalk — accept pre-built instance or build from deps
+    if (deps.sequentialLegWalk) {
+      this.sequentialLegWalk = deps.sequentialLegWalk;
+    } else if (deps.tiplocRepository && deps.otpClient) {
+      // Build SequentialLegWalk from individual dependencies.
+      // The darwinClient must satisfy the DarwinClient interface (getServiceWithStops).
+      const darwinClientForSlw = deps.darwinClient as unknown as DarwinClient;
+      this.sequentialLegWalk = new SequentialLegWalk({
+        tiplocRepository: deps.tiplocRepository,
+        darwinClient: darwinClientForSlw,
+        otpClient: deps.otpClient,
+      });
+    } else {
+      this.sequentialLegWalk = null;
+    }
   }
 
   /**
@@ -144,11 +178,79 @@ export class JourneyConfirmedHandler {
    * AC-3: Historic path routing
    * AC-5: Delay calculation from Darwin
    * AC-7: darwin_unavailable status handling
+   * BL-181 AC-W7: Call SequentialLegWalk.calculate() for accurate destination delay
    */
   private async handleHistoricJourney(payload: JourneyConfirmedPayload): Promise<void> {
     const firstSegment = payload.segments[0];
     const serviceDate = payload.departure_datetime.split('T')[0];
 
+    // BL-181 AC-W7: Attempt SequentialLegWalk first when it is wired in.
+    // SLW computes delay at the passenger's actual destination rather than the max-stop value.
+    //
+    // Darwin availability pre-check: call getServiceWithStops() before SLW.
+    // This achieves two things:
+    //   1. Detects Darwin unavailability early (AC-W10 regression: getServiceWithStops throws
+    //      → darwin_unavailable, consistent with legacy getDelayInfo path).
+    //   2. Ensures the handler can fall back to legacy getDelayInfo when SLW returns
+    //      assessment_pending / needs_manual_review.
+    if (this.sequentialLegWalk && this.darwinClient.getServiceWithStops) {
+      // Check Darwin availability via getServiceWithStops
+      try {
+        await this.darwinClient.getServiceWithStops(firstSegment.rid);
+      } catch (error) {
+        // Darwin is unavailable — publish darwin_unavailable (AC-W10 regression guard)
+        console.error('[delay-tracker] Darwin API call failed (getServiceWithStops) for historic journey', {
+          journey_id: payload.journey_id,
+          rid: firstSegment.rid,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        await this.publishDelayNotDetected(payload, 'darwin_unavailable');
+        return;
+      }
+
+      // Darwin is reachable — invoke SequentialLegWalk with journey legs
+      const legs = payload.segments.map((seg) => ({
+        rid: seg.rid,
+        originCrs: seg.origin_crs,
+        destinationCrs: seg.destination_crs,
+        scheduledArrival: seg.scheduled_arrival,
+        scheduledDeparture: seg.scheduled_departure,
+        connectionThresholdMinutes: null as null,
+      }));
+
+      let slwResult: LegWalkResult | null = null;
+      try {
+        slwResult = await this.sequentialLegWalk.calculate({
+          legs,
+          finalDestinationCrs: payload.destination_crs,
+          scheduledFinalArrival: payload.arrival_datetime,
+        });
+      } catch (_slwError) {
+        // SLW threw — treat as assessment_pending and fall through to legacy path
+        slwResult = null;
+      }
+
+      // If SLW produced a definitive result (status: 'completed'), use it
+      if (slwResult && slwResult.status === 'completed' && slwResult.delay_minutes !== null) {
+        const delayMinutes = slwResult.delay_minutes;
+        const exceedsThreshold = delayMinutes >= 15;
+        if (exceedsThreshold) {
+          await this.createDelayAlert(
+            payload,
+            { delay_minutes: delayMinutes, is_cancelled: false, delay_reasons: null },
+            firstSegment.rid,
+            'sequential_leg_walk'
+          );
+        } else {
+          await this.publishDelayNotDetected(payload, 'below_threshold');
+        }
+        return;
+      }
+
+      // SLW returned assessment_pending / needs_manual_review — fall through to legacy Darwin path
+    }
+
+    // Legacy path: use Darwin's total_delay_minutes directly
     let delayInfo;
     try {
       // AC-5: Query Darwin for delay info
@@ -172,13 +274,13 @@ export class JourneyConfirmedHandler {
     }
 
     // Delay threshold: 15 minutes
-    const delayMinutes = delayInfo.delay_minutes;
+    const delayMinutes = delayInfo.delay_minutes ?? 0;
     const isCancelled = delayInfo.is_cancelled;
     const exceedsThreshold = delayMinutes >= 15 || isCancelled;
 
     if (exceedsThreshold) {
       // Create delay alert and publish delay.detected event
-      await this.createDelayAlert(payload, delayInfo, firstSegment.rid);
+      await this.createDelayAlert(payload, delayInfo, firstSegment.rid, 'total_delay_minutes');
     } else {
       // Publish delay.not-detected event (reason: below_threshold)
       await this.publishDelayNotDetected(payload, 'below_threshold');
@@ -232,11 +334,13 @@ export class JourneyConfirmedHandler {
    * Create delay alert and publish delay.detected event
    * AC-6: delay_alerts row creation
    * AC-8: Outbox event publishing
+   * BL-181 AC-W8: resolution_method field added to delay.detected payload
    */
   private async createDelayAlert(
     payload: JourneyConfirmedPayload,
-    delayInfo: { delay_minutes: number; is_cancelled: boolean; delay_reasons?: Record<string, unknown> | null },
-    rid: string | undefined
+    delayInfo: { delay_minutes: number | null; is_cancelled: boolean; delay_reasons?: Record<string, unknown> | null },
+    rid: string | undefined,
+    resolutionMethod: 'sequential_leg_walk' | 'total_delay_minutes' | 'darwin_unavailable' = 'total_delay_minutes'
   ): Promise<void> {
     const serviceDate = payload.departure_datetime.split('T')[0];
     const scheduledDeparture = new Date(payload.departure_datetime);
@@ -265,7 +369,7 @@ export class JourneyConfirmedHandler {
 
     await this.delayAlertRepository.create({
       monitored_journey_id: monitoredJourney.id,
-      delay_minutes: delayInfo.delay_minutes,
+      delay_minutes: delayInfo.delay_minutes ?? 0,
       delay_reasons: delayInfo.delay_reasons || null,
       is_cancellation: delayInfo.is_cancelled,
       threshold_exceeded: true,
@@ -273,7 +377,7 @@ export class JourneyConfirmedHandler {
       notification_sent: false,
     });
 
-    // AC-8: Publish delay.detected event
+    // AC-8 / BL-181 AC-W8: Publish delay.detected event with resolution_method
     await this.outboxRepository.create({
       event_type: 'delay.detected',
       aggregate_type: 'journey',
@@ -287,6 +391,7 @@ export class JourneyConfirmedHandler {
         ticket_fare_pence: payload.ticket_fare_pence !== undefined ? payload.ticket_fare_pence : null,
         ticket_class: payload.ticket_class ?? null,
         ticket_type: payload.ticket_type ?? null,
+        resolution_method: resolutionMethod, // BL-181 AC-W8
       },
       correlation_id: payload.correlation_id,
     });

@@ -43,7 +43,7 @@ export class DelayChecker {
     // Map Darwin response to DelayData format expected by DelayDetector
     const delayDataArray = darwinResponse.map(d => ({
       rid: d.rid,
-      total_delay_minutes: d.delay_minutes,
+      total_delay_minutes: d.delay_minutes ?? 0,
       cancelled: d.is_cancelled,
       delay_reasons: d.delay_reasons ?? null,
     }));

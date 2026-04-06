@@ -6,6 +6,7 @@
  */
 
 import { DarwinDelayInfo } from '../types.js';
+import type { DarwinServiceWithStops } from '../services/sequential-leg-walk.js';
 import { stripGtfsPrefix } from '../utils/strip-gtfs-prefix.js';
 
 interface DarwinIngestorClientConfig {
@@ -118,6 +119,62 @@ export class DarwinIngestorClient {
       clearTimeout(timeoutId);
       if (error instanceof Error && error.name === 'AbortError') {
         throw new Error('Request timeout');
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Get a single service with full stop-level data for SequentialLegWalk
+   *
+   * BL-181 AC-W5: Satisfies the DarwinClient interface from sequential-leg-walk.ts.
+   * Calls POST /api/v1/delays with a single RID and returns a DarwinServiceWithStops.
+   * When no service is found, returns a no_data sentinel.
+   * BL-179 parity: strips GTFS prefix before sending.
+   */
+  async getServiceWithStops(rid: string): Promise<DarwinServiceWithStops> {
+    // BL-179: Strip GTFS feed-index prefix before querying Darwin Ingestor
+    const bareRid = stripGtfsPrefix(rid) as string;
+
+    const url = `${this.baseUrl}/api/v1/delays`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ rids: [bareRid] }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`Darwin API error: ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json() as { services?: DarwinServiceWithStops[] };
+
+      // Return no_data sentinel when darwin-ingestor has no record for this RID
+      if (!data.services || data.services.length === 0) {
+        return {
+          rid: bareRid,
+          delay_minutes: null,
+          is_cancelled: false,
+          delay_reasons: null,
+          status: 'no_data',
+          stops: null,
+        };
+      }
+
+      return data.services[0];
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error('Darwin API request timeout');
       }
       throw error;
     }

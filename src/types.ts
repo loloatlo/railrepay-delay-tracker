@@ -156,11 +156,25 @@ export interface CronMetrics {
 }
 
 // Darwin Ingestor API types
+
+// BL-181 AC-W4: stop-level arrival data returned by darwin-ingestor after stops join fix
+export interface DarwinStopInfo {
+  tiploc_code: string;
+  scheduled_arrival: string | null;
+  actual_arrival: string | null;
+  delay_minutes: number;
+}
+
+// BL-181 AC-W4: extended with status and stops fields required by SequentialLegWalk
 export interface DarwinDelayInfo {
   rid: string;
-  delay_minutes: number;
+  delay_minutes: number | null;
   is_cancelled: boolean;
   delay_reasons?: Record<string, unknown> | null;
+  // AC-W4: disambiguates on_time (0) vs no_data (null) vs delayed (>0) vs cancelled
+  status?: 'on_time' | 'delayed' | 'cancelled' | 'no_data';
+  // AC-W4: stop-level arrival data for SequentialLegWalk algorithm
+  stops?: DarwinStopInfo[] | null;
 }
 
 export interface DarwinDelaysApiResponse {
