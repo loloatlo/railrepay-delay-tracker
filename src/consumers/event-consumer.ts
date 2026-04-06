@@ -14,6 +14,8 @@ import { JourneyRepository } from '../repositories/journey-repository.js';
 import { DelayAlertRepository } from '../repositories/delay-alert-repository.js';
 import { OutboxRepository } from '../repositories/outbox-repository.js';
 import { DarwinIngestorClient } from '../clients/darwin-ingestor.js';
+import { TiplocRepository } from '../repositories/tiploc-repository.js';
+import type { OtpClient } from '../services/sequential-leg-walk.js';
 
 /**
  * Logger interface for dependency injection
@@ -108,12 +110,33 @@ export class EventConsumer {
     const outboxRepository = new OutboxRepository({ pool: this.db });
     const darwinClient = new DarwinIngestorClient({ baseUrl: darwinIngestorUrl });
 
-    // Create handler
+    // BL-181: Wire TiplocRepository for Sequential Leg Walk TIPLOC↔CRS resolution
+    // Wraps Pool.query to match TiplocRepositoryDeps.dbClient interface (returns rows directly)
+    const tiplocRepository = new TiplocRepository({
+      dbClient: {
+        async query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> {
+          const result = await config.db.query(sql, params);
+          return result.rows as T[];
+        },
+      },
+    });
+
+    // BL-181: Stub OtpClient — OTP graph is expired and replacement route lookups
+    // are not yet functional. Returns null (triggers assessment_pending fallback).
+    const otpClient: OtpClient = {
+      async findReplacementRoute() {
+        return null;
+      },
+    };
+
+    // Create handler with SequentialLegWalk dependencies (BL-181 AC-W6)
     this.journeyConfirmedHandler = new JourneyConfirmedHandler({
       journeyRepository,
       delayAlertRepository,
       outboxRepository,
       darwinClient,
+      tiplocRepository,
+      otpClient,
     });
   }
 
