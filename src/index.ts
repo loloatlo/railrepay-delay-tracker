@@ -24,10 +24,13 @@ import { CronScheduler } from './cron/scheduler.js';
 import { DelayChecker } from './services/delay-checker.js';
 import { JourneyMonitor } from './services/journey-monitor.js';
 import { JourneyRepository } from './repositories/journey-repository.js';
+import { DelayAlertRepository } from './repositories/delay-alert-repository.js';
 import { DarwinIngestorClient } from './clients/darwin-ingestor.js';
 import { DelayDetector } from './services/delay-detector.js';
 import { EventConsumer } from './consumers/event-consumer.js';
 import { createConsumerConfig, ConsumerConfigError } from './consumers/config.js';
+import { DelayQueryHandler } from './api/delay-query.handler.js';
+import { createMetricsState } from './metrics/sync-query-metrics.js';
 
 // Configuration from environment
 const config = {
@@ -78,8 +81,12 @@ const pool = new Pool(
 
 // Initialize components
 const journeyRepository = new JourneyRepository({ pool });
+const delayAlertRepository = new DelayAlertRepository({ pool });
 // Note: DelayAlertRepository is used by DelayTrackerService for full detection cycles
 // The simple cron flow doesn't persist alerts directly - it just checks delays
+
+// DT-001: sync-query metrics state (singleton for this process)
+const syncQueryMetricsState = createMetricsState();
 
 const darwinClient = new DarwinIngestorClient({
   baseUrl: config.services.darwinIngestorUrl,
@@ -130,15 +137,26 @@ app.get('/health/ready', async (_req: Request, res: Response) => {
   res.status(response.status).json(response.body);
 });
 
-// Metrics endpoint (basic for now - can be enhanced with prom-client)
+// DT-001: GET /delays/:journeyId — synchronous delay-query endpoint
+const delayQueryHandler = new DelayQueryHandler({
+  journeyRepository,
+  delayAlertRepository,
+  metricsState: syncQueryMetricsState,
+});
+delayQueryHandler.register(app);
+
+// Metrics endpoint (augmented with DT-001 sync-query stats)
 app.get('/metrics', async (_req: Request, res: Response) => {
   const cronMetrics = cronScheduler.getMetrics();
+  const syncSnapshot = syncQueryMetricsState.getSnapshot();
+
   const response: any = {
     cron: {
       running: cronScheduler.isRunning(),
       executing: cronScheduler.isExecuting(),
       ...cronMetrics,
     },
+    ...syncSnapshot,
   };
 
   // Include consumer stats if consumer is initialized

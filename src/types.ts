@@ -200,3 +200,35 @@ export interface ClaimTriggerApiResponse {
 export interface MessageBroker {
   publish(event: OutboxEvent): Promise<boolean>;
 }
+
+// ---------------------------------------------------------------------------
+// DT-001: synchronous delay-query endpoint types
+// ---------------------------------------------------------------------------
+
+/** Outcome kind for GET /delays/:journeyId metrics and logging */
+export type OutcomeKind =
+  | 'hit'
+  | 'on_time'
+  | 'pending'
+  | 'unknown'
+  | 'forbidden'
+  | 'bad_request'
+  | 'error';
+
+/** Response shape when a delay row exists or journey is on_time */
+export interface GetDelayHitResponse {
+  journey_id: string;
+  delay_minutes: number;
+  cancelled: boolean;
+  last_observed_at: string;
+  status: 'delayed' | 'cancelled' | 'on_time';
+}
+
+/** Response shape when journey is still pending (no delay data yet) */
+export interface GetDelayPendingResponse {
+  journey_id: string;
+  status: 'pending';
+  message: string;
+}
+
+export type GetDelayResponse = GetDelayHitResponse | GetDelayPendingResponse;

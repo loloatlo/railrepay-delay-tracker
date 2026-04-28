@@ -75,6 +75,22 @@ export class DelayAlertRepository {
   }
 
   /**
+   * Find the most recent delay alert for a monitored journey.
+   * Uses ORDER BY delay_detected_at DESC LIMIT 1 per DT-001 human-locked decision.
+   */
+  async findLatestByMonitoredJourneyId(monitoredJourneyId: string): Promise<DelayAlert | null> {
+    const query = `
+      SELECT * FROM ${this.schema}.${this.table}
+      WHERE monitored_journey_id = $1
+      ORDER BY delay_detected_at DESC
+      LIMIT 1
+    `;
+
+    const result = await this.pool.query(query, [monitoredJourneyId]);
+    return result.rows.length > 0 ? this.mapRow(result.rows[0]) : null;
+  }
+
+  /**
    * Find delay alerts by journey ID
    */
   async findByJourneyId(journeyId: string): Promise<DelayAlert[]> {
