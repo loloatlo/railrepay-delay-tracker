@@ -166,6 +166,7 @@ export interface DarwinStopInfo {
 }
 
 // BL-181 AC-W4: extended with status and stops fields required by SequentialLegWalk
+// BL-313 AC-2a: toc_code added — nullable (NULL when darwin-ingestor cannot resolve it)
 export interface DarwinDelayInfo {
   rid: string;
   delay_minutes: number | null;
@@ -175,6 +176,8 @@ export interface DarwinDelayInfo {
   status?: 'on_time' | 'delayed' | 'cancelled' | 'no_data';
   // AC-W4: stop-level arrival data for SequentialLegWalk algorithm
   stops?: DarwinStopInfo[] | null;
+  // BL-313 AC-2a: Train Operating Company code from darwin-ingestor batch response
+  toc_code?: string | null;
 }
 
 export interface DarwinDelaysApiResponse {
@@ -222,6 +225,8 @@ export interface GetDelayHitResponse {
   cancelled: boolean;
   last_observed_at: string;
   status: 'delayed' | 'cancelled' | 'on_time';
+  // BL-313 AC-2b: toc_code sourced from monitored_journey row (null when unresolvable)
+  toc_code: string | null;
 }
 
 /** Response shape when journey is still pending (no delay data yet) */

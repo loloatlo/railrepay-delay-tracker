@@ -29,6 +29,8 @@ interface IJourneyRepository {
     monitoring_status: string;
     last_checked_at?: Date | null;
     scheduled_arrival?: string | Date;
+    // BL-313 AC-2b: toc_code stored on monitored_journey row (null when unresolvable)
+    toc_code?: string | null;
   } | null>;
 }
 
@@ -224,6 +226,8 @@ export class DelayQueryHandler {
         cancelled,
         last_observed_at: (latestAlert.delay_detected_at ?? new Date()).toISOString(),
         status,
+        // BL-313 AC-2b: include toc_code from monitored_journey row (null when absent)
+        toc_code: monitoredJourney.toc_code ?? null,
       };
 
       this.emitLog('GET /delays/:journeyId hit', {
@@ -265,6 +269,8 @@ export class DelayQueryHandler {
         cancelled: false,
         last_observed_at: lastObservedAt,
         status: 'on_time',
+        // BL-313 AC-2b: include toc_code from monitored_journey row (null when absent)
+        toc_code: monitoredJourney.toc_code ?? null,
       };
 
       this.emitLog('GET /delays/:journeyId on_time', {
