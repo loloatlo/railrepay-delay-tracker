@@ -31,6 +31,9 @@ export interface MonitoredJourney {
   next_check_at?: Date | null;
   created_at?: Date;
   updated_at?: Date;
+  // BL-314: persisted ATOC code from darwin-ingestor HTTP response (e.g. 'XC', 'SE', 'GW')
+  // NULL for rows that pre-date the BL-314 migration or where darwin-ingestor cannot resolve the TOC.
+  toc_code?: string | null;
 }
 
 // Delay Alert entity

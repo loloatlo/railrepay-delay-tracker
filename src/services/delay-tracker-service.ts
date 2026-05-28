@@ -247,6 +247,7 @@ export class DelayTrackerService {
           cancelled?: boolean;
           is_cancelled?: boolean;
           delay_reasons?: Record<string, unknown> | null;
+          toc_code?: string | null;
         }> = Array.isArray(rawResponse) ? rawResponse : (rawResponse?.delays || []);
         delayDataArray = responseData.map((d) => ({
           rid: d.rid,
@@ -254,6 +255,32 @@ export class DelayTrackerService {
           cancelled: d.cancelled ?? d.is_cancelled ?? false,
           delay_reasons: d.delay_reasons ?? null,
         }));
+
+        // BL-314 (AC-write-path): persist toc_code from darwin response onto monitored_journey row.
+        // This runs for every journey with a RID match, regardless of delay/threshold outcome.
+        // toc_code: null is also persisted so the column reflects the darwin-ingestor's resolution state.
+        if (this.journeyRepository) {
+          // Build a map from RID → toc_code for quick lookup.
+          // For the 1:1 fallback case (journeysWithRids.length === 1 && responseData.length === 1),
+          // match by position since RIDs may differ between journey and mock response.
+          const singleResponseFallback =
+            journeysWithRids.length === 1 && responseData.length === 1;
+
+          for (const journey of journeysWithRids) {
+            let darwinEntry: typeof responseData[0] | undefined;
+            if (singleResponseFallback) {
+              darwinEntry = responseData[0];
+            } else {
+              darwinEntry = responseData.find((d) => d.rid === journey.rid);
+            }
+            if (darwinEntry !== undefined) {
+              const toc_code: string | null = darwinEntry.toc_code !== undefined
+                ? (darwinEntry.toc_code ?? null)
+                : null;
+              await this.journeyRepository.update(journey.id!, { toc_code } as Partial<import('../types.js').MonitoredJourney>);
+            }
+          }
+        }
       } catch (error) {
         console.error('Failed to fetch delay data from Darwin:', error);
         // Update next_check_at for all journeys and return

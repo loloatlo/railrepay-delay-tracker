@@ -121,7 +121,7 @@ export class JourneyRepository {
    */
   async update(id: string, updates: Partial<MonitoredJourney>): Promise<MonitoredJourney | null> {
     const allowedFields = [
-      'rid', 'monitoring_status', 'last_checked_at', 'next_check_at',
+      'rid', 'monitoring_status', 'last_checked_at', 'next_check_at', 'toc_code',
     ];
 
     const setClauses: string[] = [];
@@ -224,6 +224,8 @@ export class JourneyRepository {
       next_check_at: row.next_check_at as Date | null,
       created_at: row.created_at as Date,
       updated_at: row.updated_at as Date,
+      // BL-314: carry toc_code from DB row; null for pre-migration rows (column nullable)
+      toc_code: (row.toc_code as string | null) ?? null,
     };
   }
 }
