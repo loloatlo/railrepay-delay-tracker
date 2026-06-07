@@ -315,6 +315,7 @@ export class JourneyConfirmedHandler {
       scheduled_arrival: scheduledArrival,
       monitoring_status: 'active',
       next_check_at: nextCheckAt,
+      toc_code: payload.toc_code ?? null, // BL-315: persist toc_code from event payload
     });
 
     // AC-8: Publish journey.monitoring-registered event
@@ -362,6 +363,7 @@ export class JourneyConfirmedHandler {
       monitoring_status: 'completed',
       last_checked_at: null,
       next_check_at: null,
+      toc_code: payload.toc_code ?? null, // BL-315: persist toc_code from event payload
     });
 
     // Create delay alert with real monitored_journey_id

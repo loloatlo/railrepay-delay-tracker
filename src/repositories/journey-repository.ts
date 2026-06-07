@@ -31,8 +31,8 @@ export class JourneyRepository {
       INSERT INTO ${this.schema}.${this.table} (
         user_id, journey_id, rid, service_date, origin_crs, destination_crs,
         scheduled_departure, scheduled_arrival, monitoring_status,
-        last_checked_at, next_check_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        last_checked_at, next_check_at, toc_code
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       RETURNING *
     `;
 
@@ -48,6 +48,7 @@ export class JourneyRepository {
       journey.monitoring_status || 'pending_rid',
       journey.last_checked_at || null,
       journey.next_check_at || null,
+      journey.toc_code ?? null,
     ];
 
     const result = await queryClient.query(query, values);
