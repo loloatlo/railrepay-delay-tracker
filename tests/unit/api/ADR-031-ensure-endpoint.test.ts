@@ -102,15 +102,10 @@ vi.mock('../../../src/services/delay-evaluation.service.js', () => ({
   })),
 }));
 
-vi.mock('../../../src/api/delay-ensure.handler.js', () => ({
-  DelayEnsureHandler: vi.fn().mockImplementation(() => ({
-    register: vi.fn((app: Express) => {
-      // Stub: does NOT register route — route is absent (RED state for AC-1)
-      // Blake's real implementation must actually register POST /delays/ensure.
-      void app;
-    }),
-  })),
-}));
+vi.mock('../../../src/api/delay-ensure.handler.js', async () => {
+  const actual = await vi.importActual('../../../src/api/delay-ensure.handler.js');
+  return actual;
+});
 
 vi.mock('../../../src/repositories/journey-repository.js', () => ({
   JourneyRepository: vi.fn().mockImplementation(() => ({
@@ -141,9 +136,7 @@ vi.mock('../../../src/clients/darwin-ingestor.js', () => ({
 
 // ─── Import mocked modules ────────────────────────────────────────────────────
 
-// @ts-expect-error — module does not exist yet (TDD RED phase)
 const { DelayEvaluationService } = await import('../../../src/services/delay-evaluation.service.js');
-// @ts-expect-error — module does not exist yet (TDD RED phase)
 const { DelayEnsureHandler } = await import('../../../src/api/delay-ensure.handler.js');
 // @ts-expect-error — module does not exist yet (TDD RED phase)
 const { JourneyRepository } = await import('../../../src/repositories/journey-repository.js');
