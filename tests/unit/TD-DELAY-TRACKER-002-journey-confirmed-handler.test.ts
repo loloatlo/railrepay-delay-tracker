@@ -257,11 +257,19 @@ describe('TD-DELAY-TRACKER-002: journey.confirmed Event Handler', () => {
       });
     });
 
-    it('should NOT create monitored_journeys row for historic journey', async () => {
+    it('should create completed monitored_journeys row on not-detected path so query returns on_time not 404', async () => {
+      // BL-315 root cause: publishDelayNotDetected() previously wrote ONLY to the outbox,
+      // leaving no monitored_journeys row.  GET /delays/:journeyId then 404'd on every poll,
+      // the BFF reported 'pending' forever, and the PWA timed out.
+      // Fix: publishDelayNotDetected() MUST ALSO call journeyRepository.create() with
+      // monitoring_status='completed' so the query endpoint returns status:'on_time'.
+      // The old assertion ("not.toHaveBeenCalled") encoded the *buggy* design and is replaced here.
       await handler.handle(validHistoricPayload);
 
-      // Historic journeys are processed immediately, not monitored
-      expect(mockJourneyRepository.create).not.toHaveBeenCalled();
+      // Historic not-detected journeys MUST create a monitored_journeys row (BL-315)
+      expect(mockJourneyRepository.create).toHaveBeenCalled();
+      const createArg = mockJourneyRepository.create.mock.calls[0][0] as Record<string, unknown>;
+      expect(createArg).toHaveProperty('monitoring_status', 'completed');
     });
   });
 

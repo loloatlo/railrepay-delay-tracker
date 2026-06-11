@@ -185,8 +185,12 @@ describe('TD-DELAY-TRACKER-005: Historic Journey Delay Alert FK Fix', () => {
       );
     });
 
-    it('should NOT create monitored_journeys row when delay < 15 min (below threshold)', async () => {
-      // Mock Darwin: delay below threshold
+    it('should create completed monitored_journeys row when delay < 15 min (not-detected / below_threshold path) — BL-315 fix', async () => {
+      // BL-315 root cause: publishDelayNotDetected() previously wrote ONLY to the outbox,
+      // leaving no monitored_journeys row.  GET /delays/:journeyId then 404'd on every poll.
+      // Fix: publishDelayNotDetected() MUST ALSO call journeyRepository.create() with
+      // monitoring_status='completed' so the query endpoint returns status:'on_time' not 404.
+      // The old assertion ("not.toHaveBeenCalled") encoded the *buggy* design and is replaced here.
       mockDarwinClient.getDelayInfo = vi.fn().mockResolvedValue({
         delay_minutes: 10,
         is_cancelled: false,
@@ -194,8 +198,10 @@ describe('TD-DELAY-TRACKER-005: Historic Journey Delay Alert FK Fix', () => {
 
       await handler.handle(historicDelayedPayload);
 
-      // No delay alert means no monitored_journeys row needed
-      expect(mockJourneyRepository.create).not.toHaveBeenCalled();
+      // Not-detected path MUST create a monitored_journeys row with completed status (BL-315)
+      expect(mockJourneyRepository.create).toHaveBeenCalled();
+      const createArg = mockJourneyRepository.create.mock.calls[0][0] as Record<string, unknown>;
+      expect(createArg).toHaveProperty('monitoring_status', 'completed');
     });
 
     it('should create monitored_journeys row for cancelled services', async () => {
@@ -343,15 +349,20 @@ describe('TD-DELAY-TRACKER-005: Historic Journey Delay Alert FK Fix', () => {
       expect(notDetectedCalls).toHaveLength(0);
     });
 
-    it('should only use "darwin_unavailable" reason when Darwin API call itself fails', async () => {
-      // Mock: Darwin API call fails (NOT database error)
+    it('should use "darwin_unavailable" reason when Darwin API call itself fails and still create completed monitored_journeys row (BL-315)', async () => {
+      // BL-315 root cause: publishDelayNotDetected() previously wrote ONLY to the outbox
+      // on the darwin_unavailable path, leaving no monitored_journeys row.
+      // Fix: publishDelayNotDetected() MUST ALSO call journeyRepository.create() with
+      // monitoring_status='completed' so GET /delays/:journeyId returns on_time not 404.
+      // The old assertion ("not.toHaveBeenCalled" for journeyRepository.create) encoded the
+      // *buggy* design. delayAlertRepository.create MUST still NOT be called (no false alert).
       mockDarwinClient.getDelayInfo = vi.fn().mockRejectedValue(
         new Error('Darwin API timeout')
       );
 
       await handler.handle(historicDelayedPayload);
 
-      // AC-4: Should publish delay.not-detected with darwin_unavailable
+      // AC-4: Should publish delay.not-detected with darwin_unavailable (unchanged)
       expect(mockOutboxRepository.create).toHaveBeenCalledWith(
         expect.objectContaining({
           event_type: 'delay.not-detected',
@@ -361,20 +372,28 @@ describe('TD-DELAY-TRACKER-005: Historic Journey Delay Alert FK Fix', () => {
         })
       );
 
-      // Should NOT create any DB rows
-      expect(mockJourneyRepository.create).not.toHaveBeenCalled();
+      // BL-315: darwin_unavailable path MUST create monitored_journeys row with completed status
+      expect(mockJourneyRepository.create).toHaveBeenCalled();
+      const createArg = mockJourneyRepository.create.mock.calls[0][0] as Record<string, unknown>;
+      expect(createArg).toHaveProperty('monitoring_status', 'completed');
+      // Delay alert MUST NOT be created — no qualifying delay on darwin_unavailable path
       expect(mockDelayAlertRepository.create).not.toHaveBeenCalled();
     });
 
-    it('should distinguish between Darwin 404 and DB constraint errors', async () => {
-      // Mock: Darwin returns 404 (service not found)
+    it('should distinguish between Darwin 404 and DB constraint errors — Darwin 404 creates completed monitored_journeys row (BL-315)', async () => {
+      // BL-315 root cause: publishDelayNotDetected() previously wrote ONLY to the outbox
+      // on the darwin_unavailable (Darwin 404) path, leaving no monitored_journeys row.
+      // Fix: publishDelayNotDetected() MUST ALSO call journeyRepository.create() with
+      // monitoring_status='completed' so GET /delays/:journeyId returns on_time not 404.
+      // The old assertion ("not.toHaveBeenCalled" for journeyRepository.create) encoded the
+      // *buggy* design and is replaced here.
       mockDarwinClient.getDelayInfo = vi.fn().mockRejectedValue(
         new Error('Darwin service not found: 404')
       );
 
       await handler.handle(historicDelayedPayload);
 
-      // AC-4: Darwin 404 -> darwin_unavailable (expected behavior)
+      // AC-4: Darwin 404 -> darwin_unavailable (expected behavior — unchanged)
       expect(mockOutboxRepository.create).toHaveBeenCalledWith(
         expect.objectContaining({
           event_type: 'delay.not-detected',
@@ -384,8 +403,10 @@ describe('TD-DELAY-TRACKER-005: Historic Journey Delay Alert FK Fix', () => {
         })
       );
 
-      // Should NOT throw (Darwin unavailability is expected, not an error)
-      expect(mockJourneyRepository.create).not.toHaveBeenCalled();
+      // BL-315: Darwin 404 path MUST create monitored_journeys row (darwin_unavailable path)
+      expect(mockJourneyRepository.create).toHaveBeenCalled();
+      const createArg = mockJourneyRepository.create.mock.calls[0][0] as Record<string, unknown>;
+      expect(createArg).toHaveProperty('monitoring_status', 'completed');
     });
   });
 
@@ -414,12 +435,21 @@ describe('TD-DELAY-TRACKER-005: Historic Journey Delay Alert FK Fix', () => {
         })
       );
 
-      // Should NOT create delay alert or monitored_journeys row
+      // Should NOT create delay alert — no qualifying delay on below_threshold path (invariant preserved)
       expect(mockDelayAlertRepository.create).not.toHaveBeenCalled();
-      expect(mockJourneyRepository.create).not.toHaveBeenCalled();
+      // BL-315: not-detected path MUST create monitored_journeys row with completed status
+      expect(mockJourneyRepository.create).toHaveBeenCalled();
+      const createArg = mockJourneyRepository.create.mock.calls[0][0] as Record<string, unknown>;
+      expect(createArg).toHaveProperty('monitoring_status', 'completed');
     });
 
-    it('should NOT create delay alert when delay is exactly 14 minutes', async () => {
+    it('should NOT create delay alert when delay is exactly 14 minutes, but MUST create completed monitored_journeys row (BL-315)', async () => {
+      // BL-315 root cause: publishDelayNotDetected() previously wrote ONLY to the outbox,
+      // leaving no monitored_journeys row.  GET /delays/:journeyId then 404'd on every poll.
+      // Fix: publishDelayNotDetected() MUST ALSO call journeyRepository.create() with
+      // monitoring_status='completed' so the query endpoint returns status:'on_time'.
+      // The old assertion ("not.toHaveBeenCalled" for journeyRepository.create) encoded the
+      // *buggy* design and is replaced here. delayAlertRepository.create MUST still NOT be called.
       mockDarwinClient.getDelayInfo = vi.fn().mockResolvedValue({
         delay_minutes: 14,
         is_cancelled: false,
@@ -427,9 +457,12 @@ describe('TD-DELAY-TRACKER-005: Historic Journey Delay Alert FK Fix', () => {
 
       await handler.handle(historicDelayedPayload);
 
-      // Below threshold (need >= 15)
+      // Below threshold (need >= 15) — no delay alert (invariant preserved)
       expect(mockDelayAlertRepository.create).not.toHaveBeenCalled();
-      expect(mockJourneyRepository.create).not.toHaveBeenCalled();
+      // BL-315: not-detected path MUST create monitored_journeys row with completed status
+      expect(mockJourneyRepository.create).toHaveBeenCalled();
+      const createArg = mockJourneyRepository.create.mock.calls[0][0] as Record<string, unknown>;
+      expect(createArg).toHaveProperty('monitoring_status', 'completed');
       expect(mockOutboxRepository.create).toHaveBeenCalledWith(
         expect.objectContaining({
           event_type: 'delay.not-detected',
@@ -465,14 +498,20 @@ describe('TD-DELAY-TRACKER-005: Historic Journey Delay Alert FK Fix', () => {
   });
 
   describe('AC-6: Darwin API failure -> delay.not-detected reason darwin_unavailable (regression)', () => {
-    it('should publish delay.not-detected with darwin_unavailable when Darwin API fails', async () => {
+    it('should publish delay.not-detected with darwin_unavailable when Darwin API fails and create completed monitored_journeys row (BL-315)', async () => {
+      // BL-315 root cause: publishDelayNotDetected() previously wrote ONLY to the outbox
+      // on the darwin_unavailable path, leaving no monitored_journeys row.
+      // Fix: publishDelayNotDetected() MUST ALSO call journeyRepository.create() with
+      // monitoring_status='completed' so GET /delays/:journeyId returns on_time not 404.
+      // The old assertion ("not.toHaveBeenCalled" for journeyRepository.create) encoded the
+      // *buggy* design and is replaced here. delayAlertRepository.create MUST still NOT be called.
       mockDarwinClient.getDelayInfo = vi.fn().mockRejectedValue(
         new Error('Darwin API request timeout')
       );
 
       await handler.handle(historicDelayedPayload);
 
-      // AC-6: Regression test - Darwin unavailability is gracefully handled
+      // AC-6: Regression test - Darwin unavailability is gracefully handled (unchanged)
       expect(mockOutboxRepository.create).toHaveBeenCalledWith(
         expect.objectContaining({
           event_type: 'delay.not-detected',
@@ -482,9 +521,12 @@ describe('TD-DELAY-TRACKER-005: Historic Journey Delay Alert FK Fix', () => {
         })
       );
 
-      // Should NOT create delay alert or monitored_journeys row
+      // Delay alert MUST NOT be created — no qualifying delay on darwin_unavailable path (invariant preserved)
       expect(mockDelayAlertRepository.create).not.toHaveBeenCalled();
-      expect(mockJourneyRepository.create).not.toHaveBeenCalled();
+      // BL-315: darwin_unavailable path MUST create monitored_journeys row with completed status
+      expect(mockJourneyRepository.create).toHaveBeenCalled();
+      const createArg = mockJourneyRepository.create.mock.calls[0][0] as Record<string, unknown>;
+      expect(createArg).toHaveProperty('monitoring_status', 'completed');
     });
 
     it('should handle Darwin 500 error gracefully', async () => {
