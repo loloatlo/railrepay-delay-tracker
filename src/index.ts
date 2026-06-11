@@ -30,6 +30,9 @@ import { DelayDetector } from './services/delay-detector.js';
 import { EventConsumer } from './consumers/event-consumer.js';
 import { createConsumerConfig, ConsumerConfigError } from './consumers/config.js';
 import { DelayQueryHandler } from './api/delay-query.handler.js';
+import { DelayEnsureHandler } from './api/delay-ensure.handler.js';
+import { DelayEvaluationService } from './services/delay-evaluation.service.js';
+import { OutboxRepository } from './repositories/outbox-repository.js';
 import { createMetricsState } from './metrics/sync-query-metrics.js';
 
 // Configuration from environment
@@ -82,6 +85,7 @@ const pool = new Pool(
 // Initialize components
 const journeyRepository = new JourneyRepository({ pool });
 const delayAlertRepository = new DelayAlertRepository({ pool });
+const outboxRepository = new OutboxRepository({ pool });
 // Note: DelayAlertRepository is used by DelayTrackerService for full detection cycles
 // The simple cron flow doesn't persist alerts directly - it just checks delays
 
@@ -144,6 +148,19 @@ const delayQueryHandler = new DelayQueryHandler({
   metricsState: syncQueryMetricsState,
 });
 delayQueryHandler.register(app);
+
+// ADR-031: POST /delays/ensure — synchronous ensure-on-404 endpoint
+const delayEvaluationService = new DelayEvaluationService({
+  journeyRepository,
+  delayAlertRepository,
+  outboxRepository,
+  darwinClient,
+});
+const delayEnsureHandler = new DelayEnsureHandler({
+  journeyRepository,
+  delayEvaluationService,
+});
+delayEnsureHandler.register(app);
 
 // Metrics endpoint (augmented with DT-001 sync-query stats)
 app.get('/metrics', async (_req: Request, res: Response) => {

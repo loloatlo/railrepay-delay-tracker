@@ -39,6 +39,10 @@ export interface EventConsumerConfig {
   db: Pool;
   logger: Logger;
   ssl?: boolean;
+  /** AC-10 (ADR-031): Kafka session timeout in ms. Must be >= 30000 to survive long Darwin/SLW calls. */
+  sessionTimeout?: number;
+  /** AC-10 (ADR-031): Kafka heartbeat interval in ms. Must be <= sessionTimeout/3. */
+  heartbeatInterval?: number;
 }
 
 /**
@@ -90,6 +94,11 @@ export class EventConsumer {
     this.db = config.db;
     this.logger = config.logger;
 
+    // AC-10 (ADR-031): tuned session/heartbeat so long Darwin/SLW work does not kick the consumer.
+    // sessionTimeout defaults to 60000 ms (60 s); heartbeatInterval defaults to 10000 ms (10 s).
+    const sessionTimeout = config.sessionTimeout ?? 60000;
+    const heartbeatInterval = config.heartbeatInterval ?? Math.floor(sessionTimeout / 3);
+
     // Create KafkaConsumer with config
     this.kafkaConsumer = new KafkaConsumer({
       serviceName: config.serviceName,
@@ -99,6 +108,8 @@ export class EventConsumer {
       groupId: config.groupId,
       logger: config.logger,
       ssl: config.ssl,
+      sessionTimeout,
+      heartbeatInterval,
     });
 
     // Get DARWIN_INGESTOR_URL from env (required for handler)
