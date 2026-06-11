@@ -204,7 +204,7 @@ export class JourneyConfirmedHandler {
           rid: firstSegment.rid,
           error: error instanceof Error ? error.message : String(error),
         });
-        await this.publishDelayNotDetected(payload, 'darwin_unavailable');
+        await this.publishDelayNotDetected(payload, 'darwin_unavailable', firstSegment.rid, serviceDate);
         return;
       }
 
@@ -244,7 +244,7 @@ export class JourneyConfirmedHandler {
             'sequential_leg_walk'
           );
         } else {
-          await this.publishDelayNotDetected(payload, 'below_threshold');
+          await this.publishDelayNotDetected(payload, 'below_threshold', firstSegment.rid, serviceDate);
         }
         return;
       }
@@ -271,7 +271,7 @@ export class JourneyConfirmedHandler {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
-      await this.publishDelayNotDetected(payload, 'darwin_unavailable');
+      await this.publishDelayNotDetected(payload, 'darwin_unavailable', firstSegment.rid, serviceDate);
       return;
     }
 
@@ -285,7 +285,7 @@ export class JourneyConfirmedHandler {
       await this.createDelayAlert(payload, delayInfo, firstSegment.rid, 'total_delay_minutes');
     } else {
       // Publish delay.not-detected event (reason: below_threshold)
-      await this.publishDelayNotDetected(payload, 'below_threshold');
+      await this.publishDelayNotDetected(payload, 'below_threshold', firstSegment.rid, serviceDate);
     }
   }
 
@@ -404,11 +404,34 @@ export class JourneyConfirmedHandler {
   /**
    * Publish delay.not-detected event
    * AC-8: Outbox event publishing
+   * BL-315: Also creates a monitored_journeys row with monitoring_status='completed'
+   *   so that GET /delays/:journeyId returns status:'on_time' (not 404) after this path.
+   *   Mirrors the createDelayAlert() path (~lines 354-367) which always creates a row.
+   *   No delay_alert is created here — the no-delay-alert invariant is preserved.
    */
   private async publishDelayNotDetected(
     payload: JourneyConfirmedPayload,
-    reason: 'below_threshold' | 'darwin_unavailable'
+    reason: 'below_threshold' | 'darwin_unavailable',
+    rid: string,
+    serviceDate: string
   ): Promise<void> {
+    // BL-315: Create monitored_journeys row with monitoring_status='completed' so the
+    // query endpoint can return on_time instead of 404-ing on every poll.
+    await this.journeyRepository.create({
+      journey_id: payload.journey_id,
+      user_id: payload.user_id,
+      rid,
+      service_date: serviceDate,
+      origin_crs: payload.origin_crs,
+      destination_crs: payload.destination_crs,
+      scheduled_departure: new Date(payload.departure_datetime),
+      scheduled_arrival: new Date(payload.arrival_datetime),
+      monitoring_status: 'completed',
+      last_checked_at: null,
+      next_check_at: null,
+      toc_code: payload.toc_code ?? null,
+    });
+
     await this.outboxRepository.create({
       event_type: 'delay.not-detected',
       aggregate_type: 'journey',
