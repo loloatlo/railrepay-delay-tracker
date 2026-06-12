@@ -7,6 +7,7 @@
 
 import { Pool, PoolClient } from 'pg';
 import { MonitoredJourney, MonitoringStatus } from '../types.js';
+import { EvaluationSegment } from '../services/delay-evaluation.service.js';
 
 interface JourneyRepositoryConfig {
   pool: Pool;
@@ -80,6 +81,36 @@ export class JourneyRepository {
 
     const result = await this.pool.query(query, [userId]);
     return result.rows.map(row => this.mapRow(row));
+  }
+
+  /**
+   * Find journey segments from journey_matcher.journey_segments by journey_id.
+   * ADR-001: cross-schema read (delay_tracker reads journey_matcher r/o).
+   * BL-315: used by DelayEnsureHandler when body contains no segments.
+   */
+  async findSegmentsByJourneyId(journeyId: string): Promise<EvaluationSegment[]> {
+    const sql = `
+      SELECT segment_order, origin_crs, destination_crs,
+             scheduled_departure, scheduled_arrival, rid, toc_code
+      FROM journey_matcher.journey_segments
+      WHERE journey_id = $1
+      ORDER BY segment_order
+    `;
+
+    const result = await this.pool.query(sql, [journeyId]);
+    return result.rows.map((row: Record<string, unknown>) => ({
+      segment_order: row.segment_order as number,
+      origin_crs: row.origin_crs as string,
+      destination_crs: row.destination_crs as string,
+      scheduled_departure: row.scheduled_departure instanceof Date
+        ? row.scheduled_departure.toISOString()
+        : row.scheduled_departure as string,
+      scheduled_arrival: row.scheduled_arrival instanceof Date
+        ? row.scheduled_arrival.toISOString()
+        : row.scheduled_arrival as string,
+      rid: row.rid as string,
+      toc_code: row.toc_code as string,
+    }));
   }
 
   /**

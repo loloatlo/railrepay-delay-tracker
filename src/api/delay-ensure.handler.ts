@@ -22,6 +22,7 @@ import { type Express, type Request, type Response } from 'express';
 import {
   DelayEvaluationService,
   type EvaluationInput,
+  type EvaluationSegment,
 } from '../services/delay-evaluation.service.js';
 
 // ─── Deps interface ───────────────────────────────────────────────────────────
@@ -33,6 +34,8 @@ interface IJourneyRepository {
   // a structural incompatibility with JourneyRepository.create() → Promise<MonitoredJourney>
   // (which lacks an index signature).
   create(data: unknown): Promise<unknown>;
+  // BL-315: load segments from journey_matcher when body has none (ADR-031 BFF contract)
+  findSegmentsByJourneyId(journeyId: string): Promise<EvaluationSegment[]>;
 }
 
 interface DelayEnsureHandlerConfig {
@@ -83,23 +86,33 @@ export class DelayEnsureHandler {
     // The service itself guards against double-create via findByJourneyId check.
 
     // ── AC-3: Build EvaluationInput and delegate to shared service ────────────
-    const segments = Array.isArray(body.segments) ? body.segments : [];
+    // BL-315: ADR-031 BFF contract sends ONLY journey_id + user_id (no segments).
+    // If segments are absent/empty in the body, load them from journey_matcher.journey_segments.
+    // If still empty after DB lookup (genuine no-journey), return early no_data without a row.
+    let segments: EvaluationSegment[] = Array.isArray(body.segments) ? body.segments as EvaluationSegment[] : [];
 
-    // If no segments provided, we cannot do a Darwin lookup — return no_data
+    if (segments.length === 0) {
+      // Load from journey_matcher.journey_segments (cross-schema read — ADR-001)
+      segments = await this.journeyRepository.findSegmentsByJourneyId(body.journey_id as string);
+    }
+
+    // Genuine empty journey (no DB segments either) — return no_data without creating a row
     if (segments.length === 0) {
       res.status(200).json({ status: 'no_data' });
       return;
     }
 
+    // Derive top-level journey fields from segments[0] when not supplied in body
+    const seg0 = segments[0];
     const input: EvaluationInput = {
       journey_id: body.journey_id as string,
       user_id: body.user_id as string,
-      origin_crs: (body.origin_crs as string) ?? '',
-      destination_crs: (body.destination_crs as string) ?? '',
-      departure_datetime: (body.departure_datetime as string) ?? new Date().toISOString(),
-      arrival_datetime: (body.arrival_datetime as string) ?? new Date().toISOString(),
-      toc_code: (body.toc_code as string | null) ?? null,
-      segments: segments as EvaluationInput['segments'],
+      origin_crs: typeof body.origin_crs === 'string' ? body.origin_crs : seg0.origin_crs,
+      destination_crs: typeof body.destination_crs === 'string' ? body.destination_crs : seg0.destination_crs,
+      departure_datetime: typeof body.departure_datetime === 'string' ? body.departure_datetime : seg0.scheduled_departure,
+      arrival_datetime: typeof body.arrival_datetime === 'string' ? body.arrival_datetime : seg0.scheduled_arrival,
+      toc_code: typeof body.toc_code === 'string' ? body.toc_code : (seg0.toc_code ?? null),
+      segments,
       correlation_id: (body.correlation_id as string) ?? undefined,
       ticket_fare_pence: typeof body.ticket_fare_pence === 'number' ? body.ticket_fare_pence : null,
       ticket_class: typeof body.ticket_class === 'string' ? body.ticket_class : null,
