@@ -7,8 +7,8 @@
  *
  * AC-3 of ADR-031-ensure-endpoint.test.ts: The ensure endpoint MUST delegate to
  * DelayEvaluationService.evaluate() which encapsulates:
- *   1. Darwin availability pre-check (getServiceWithStops if SLW is wired)
- *   2. SequentialLegWalk / legacy getDelayInfo Darwin lookup
+ *   1. Darwin availability pre-check (getServiceWithStops on segments[0].rid)
+ *   2. SequentialLegWalk.calculate() across ALL legs (BL-337 / ADR-021)
  *   3. Persist delay_alerts row OR record not-detected (monitored_journeys row)
  *
  * Returns a terminal EvaluationOutcome — one of:
@@ -16,14 +16,16 @@
  *   { outcome: 'on_time',  delay_minutes, cancelled, toc_code, last_observed_at }
  *   { outcome: 'no_data' }
  *
- * BL   : BL-315
+ * BL   : BL-315, BL-337
  * ADR  : ADR-031 — Option (f) synchronous ensure-on-404
+ * ADR  : ADR-021 — Fundamental Delay Equation (final-destination delay via SLW)
  */
 
 import { JourneyRepository } from '../repositories/journey-repository.js';
 import { DelayAlertRepository } from '../repositories/delay-alert-repository.js';
 import { OutboxRepository } from '../repositories/outbox-repository.js';
 import { DarwinIngestorClient } from '../clients/darwin-ingestor.js';
+import type { SequentialLegWalk, LegWalkResult } from './sequential-leg-walk.js';
 
 // ─── Public types ──────────────────────────────────────────────────────────────
 
@@ -67,6 +69,12 @@ export interface DelayEvaluationServiceDeps {
   delayAlertRepository: DelayAlertRepository | { findLatestByMonitoredJourneyId?: (id: string) => Promise<unknown>; create: (data: unknown) => Promise<unknown> };
   outboxRepository: OutboxRepository | { create: (data: unknown) => Promise<unknown> };
   darwinClient: DarwinIngestorClient | { getDelayInfo: (params: unknown) => Promise<{ delay_minutes: number | null; is_cancelled: boolean; delay_reasons?: Record<string, unknown> | null }>; getServiceWithStops?: (rid: string) => Promise<unknown> };
+  /**
+   * BL-337 / ADR-021: SequentialLegWalk instance for multi-leg final-destination delay.
+   * When provided, evaluate() uses SLW.calculate() instead of the legacy getDelayInfo path.
+   * The stub OtpClient (returns null) is wired in index.ts; OTP replacement routing is deferred.
+   */
+  sequentialLegWalk?: SequentialLegWalk | { calculate: (params: unknown) => Promise<LegWalkResult> };
 }
 
 // ─── Service ──────────────────────────────────────────────────────────────────
@@ -76,21 +84,30 @@ export class DelayEvaluationService {
   private delayAlertRepository: DelayEvaluationServiceDeps['delayAlertRepository'];
   private outboxRepository: DelayEvaluationServiceDeps['outboxRepository'];
   private darwinClient: DelayEvaluationServiceDeps['darwinClient'];
+  private sequentialLegWalk: DelayEvaluationServiceDeps['sequentialLegWalk'];
 
   constructor(deps: DelayEvaluationServiceDeps) {
     this.journeyRepository = deps.journeyRepository;
     this.delayAlertRepository = deps.delayAlertRepository;
     this.outboxRepository = deps.outboxRepository;
     this.darwinClient = deps.darwinClient;
+    this.sequentialLegWalk = deps.sequentialLegWalk;
   }
 
   /**
    * Evaluate delay for a historic journey.
    *
+   * BL-337 / ADR-021: Uses SequentialLegWalk to compute final-destination delay
+   * across ALL journey legs (not just leg-1 as the legacy path did).
+   *
    * Performs:
-   *   1. Darwin availability pre-check (getServiceWithStops when available)
-   *   2. Legacy getDelayInfo Darwin lookup
-   *   3. Persist delay_alerts row (delayed) OR monitored_journeys completed row (on_time / darwin_unavailable)
+   *   1. Darwin availability pre-check (getServiceWithStops on segments[0].rid — PRESERVED)
+   *   2. Build JourneyLeg[] from input.segments and call sequentialLegWalk.calculate()
+   *   3. Map LegWalkResult → terminal outcome:
+   *        completed + delay_minutes >= 15 → delayed
+   *        completed + delay_minutes < 15  → on_time
+   *        assessment_pending | needs_manual_review | delay_minutes === null → no_data
+   *   4. Persist delay_alerts row (delayed) OR monitored_journeys completed row (on_time / no_data)
    *
    * Returns a TERMINAL EvaluationOutcome — never 'pending'.
    */
@@ -99,7 +116,7 @@ export class DelayEvaluationService {
     const serviceDate = input.departure_datetime.split('T')[0];
     const now = new Date().toISOString();
 
-    // ── Darwin availability check (getServiceWithStops if available) ──────────
+    // ── Darwin availability pre-check (segments[0].rid — PRESERVED per test AC-2/AC-4) ──
     if (this.darwinClient.getServiceWithStops) {
       try {
         await this.darwinClient.getServiceWithStops(firstSegment.rid);
@@ -110,7 +127,28 @@ export class DelayEvaluationService {
       }
     }
 
-    // ── Legacy getDelayInfo path ───────────────────────────────────────────────
+    // ── BL-337: SequentialLegWalk path (ADR-021 fundamental delay equation) ──
+    if (this.sequentialLegWalk) {
+      // Map EvaluationSegment[] → JourneyLeg[] for SLW
+      const legs = input.segments.map((seg) => ({
+        rid: seg.rid,
+        originCrs: seg.origin_crs,
+        destinationCrs: seg.destination_crs,
+        scheduledArrival: seg.scheduled_arrival,
+        scheduledDeparture: seg.scheduled_departure,
+        connectionThresholdMinutes: null as null,
+      }));
+
+      const slwResult = await this.sequentialLegWalk.calculate({
+        legs,
+        finalDestinationCrs: input.destination_crs,
+        scheduledFinalArrival: input.arrival_datetime,
+      });
+
+      return this.terminalFromSlwResult(slwResult, input, firstSegment.rid, serviceDate, now);
+    }
+
+    // ── Legacy getDelayInfo fallback (no SLW wired — preserved for backward compat) ──
     let delayInfo: { delay_minutes: number | null; is_cancelled: boolean; delay_reasons?: Record<string, unknown> | null };
     try {
       delayInfo = await this.darwinClient.getDelayInfo({
@@ -168,9 +206,8 @@ export class DelayEvaluationService {
         // Non-fatal — ensure returns terminal outcome regardless
       }
 
-      const outcome = isCancelled ? 'delayed' as const : 'delayed' as const;
       return {
-        outcome,
+        outcome: 'delayed',
         delay_minutes: delayMinutes,
         cancelled: isCancelled,
         toc_code: input.toc_code ?? null,
@@ -199,6 +236,109 @@ export class DelayEvaluationService {
       return {
         outcome: 'on_time',
         delay_minutes: delayMinutes,
+        cancelled: false,
+        toc_code: input.toc_code ?? null,
+        last_observed_at: now,
+      };
+    }
+  }
+
+  /**
+   * BL-337: Map a LegWalkResult from SequentialLegWalk to a terminal EvaluationOutcome.
+   *
+   * Mapping table (per Jessie's test spec):
+   *   completed + delay_minutes >= 15  → delayed  (persist alert + outbox)
+   *   completed + delay_minutes < 15   → on_time  (persist completed row + outbox)
+   *   assessment_pending               → no_data  (Darwin had no stop data)
+   *   needs_manual_review              → no_data  (OTP stub returned null — deferred)
+   *   delay_minutes === null           → no_data  (AC-4 anti-fraud guard: never coerce null→0)
+   */
+  private async terminalFromSlwResult(
+    slwResult: LegWalkResult,
+    input: EvaluationInput,
+    rid: string,
+    serviceDate: string,
+    now: string,
+  ): Promise<EvaluationOutcome> {
+    const { status, delay_minutes } = slwResult;
+
+    // AC-4: null delay_minutes → no_data (never coerce to 0 — anti-fraud guard)
+    if (delay_minutes === null || status === 'assessment_pending' || status === 'needs_manual_review') {
+      await this.persistCompletedRow(input, rid, serviceDate);
+      return { outcome: 'no_data' };
+    }
+
+    // status === 'completed' from here
+    const exceedsThreshold = delay_minutes >= 15;
+
+    if (exceedsThreshold) {
+      // ── delayed terminal ────────────────────────────────────────────────
+      const monitoredJourney = await this.persistCompletedRow(input, rid, serviceDate);
+
+      if (monitoredJourney?.id) {
+        await this.delayAlertRepository.create({
+          monitored_journey_id: monitoredJourney.id,
+          delay_minutes,
+          delay_reasons: null,
+          is_cancellation: false,
+          threshold_exceeded: true,
+          claim_triggered: false,
+          notification_sent: false,
+        });
+      }
+
+      try {
+        await this.outboxRepository.create({
+          event_type: 'delay.detected',
+          aggregate_type: 'journey',
+          aggregate_id: input.journey_id,
+          payload: {
+            journey_id: input.journey_id,
+            user_id: input.user_id,
+            delay_minutes,
+            is_cancellation: false,
+            toc_code: input.toc_code ?? null,
+            ticket_fare_pence: input.ticket_fare_pence ?? null,
+            ticket_class: input.ticket_class ?? null,
+            ticket_type: input.ticket_type ?? null,
+            resolution_method: 'total_delay_minutes',
+          },
+          correlation_id: input.correlation_id,
+        });
+      } catch {
+        // Non-fatal
+      }
+
+      return {
+        outcome: 'delayed',
+        delay_minutes,
+        cancelled: false,
+        toc_code: input.toc_code ?? null,
+        last_observed_at: now,
+      };
+    } else {
+      // ── on_time terminal (delay_minutes < 15, including 0) ─────────────
+      await this.persistCompletedRow(input, rid, serviceDate);
+
+      try {
+        await this.outboxRepository.create({
+          event_type: 'delay.not-detected',
+          aggregate_type: 'journey',
+          aggregate_id: input.journey_id,
+          payload: {
+            journey_id: input.journey_id,
+            user_id: input.user_id,
+            reason: 'below_threshold',
+          },
+          correlation_id: input.correlation_id,
+        });
+      } catch {
+        // Non-fatal
+      }
+
+      return {
+        outcome: 'on_time',
+        delay_minutes,
         cancelled: false,
         toc_code: input.toc_code ?? null,
         last_observed_at: now,

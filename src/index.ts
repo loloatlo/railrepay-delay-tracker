@@ -34,6 +34,8 @@ import { DelayEnsureHandler } from './api/delay-ensure.handler.js';
 import { DelayEvaluationService } from './services/delay-evaluation.service.js';
 import { OutboxRepository } from './repositories/outbox-repository.js';
 import { createMetricsState } from './metrics/sync-query-metrics.js';
+import { TiplocRepository } from './repositories/tiploc-repository.js';
+import { SequentialLegWalk, type OtpClient } from './services/sequential-leg-walk.js';
 
 // Configuration from environment
 const config = {
@@ -149,12 +151,41 @@ const delayQueryHandler = new DelayQueryHandler({
 });
 delayQueryHandler.register(app);
 
-// ADR-031: POST /delays/ensure — synchronous ensure-on-404 endpoint
+// ADR-031 / BL-337: POST /delays/ensure — synchronous ensure-on-404 endpoint
+// BL-337: Wire SequentialLegWalk for multi-leg final-destination delay (ADR-021)
+// Mirrors the pattern in event-consumer.ts:126-151
+
+// BL-181: TiplocRepository — wraps Pool.query to match TiplocRepositoryDeps.dbClient interface
+const tiplocRepository = new TiplocRepository({
+  dbClient: {
+    async query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> {
+      const result = await pool.query(sql, params);
+      return result.rows as T[];
+    },
+  },
+});
+
+// BL-181: Stub OtpClient — OTP graph is expired; replacement route lookups are deferred.
+// Returns null (triggers needs_manual_review → no_data in evaluate()).
+// See TD-OTP-REPLACEMENT-001 for remediation tracking.
+const stubOtpClient: OtpClient = {
+  async findReplacementRoute() {
+    return null;
+  },
+};
+
+const sequentialLegWalk = new SequentialLegWalk({
+  tiplocRepository,
+  darwinClient,
+  otpClient: stubOtpClient,
+});
+
 const delayEvaluationService = new DelayEvaluationService({
   journeyRepository,
   delayAlertRepository,
   outboxRepository,
   darwinClient,
+  sequentialLegWalk,
 });
 const delayEnsureHandler = new DelayEnsureHandler({
   journeyRepository,
