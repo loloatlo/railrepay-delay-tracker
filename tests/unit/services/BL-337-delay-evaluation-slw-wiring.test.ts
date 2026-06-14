@@ -591,6 +591,75 @@ describe('BL-337 AC-2: Single-leg parity — N=1 outcomes unchanged across all t
     // Acceptable terminals: no_data OR delayed/cancelled
     expect(['no_data', 'delayed']).toContain(result.outcome);
   });
+
+  it('AC-2 [idempotency]: findByJourneyId returns existing row → persistCompletedRow skips create, still returns on_time', async () => {
+    // AC-2: Coverage gap fix — persistCompletedRow idempotency branch.
+    // When findByJourneyId finds an existing row, create() is NOT called and the
+    // existing row is returned. evaluate() still returns the correct SLW terminal.
+    // Self-fix (TD-3): covers lines 361-362 (idempotency early-return in persistCompletedRow).
+    const service = buildServiceWithSLW(mocks);
+
+    // Idempotency: row already exists for this journey
+    mocks.mockJourneyRepo.findByJourneyId.mockResolvedValue({
+      id: 'existing-monitored-uuid-001',
+      journey_id: JOURNEY_SINGLE,
+      monitoring_status: 'completed',
+    });
+
+    mocks.mockSequentialLegWalk.calculate.mockResolvedValue({
+      delay_minutes: 0,
+      actual_final_arrival: `${TRAVEL_DATE}T10:30:00.000Z`,
+      scheduled_final_arrival: `${TRAVEL_DATE}T10:30:00.000Z`,
+      status: 'completed',
+    });
+    mocks.mockDarwinClient.getServiceWithStops.mockResolvedValue({
+      rid: '202606207108175',
+      delay_minutes: 0,
+      is_cancelled: false,
+      delay_reasons: null,
+      status: 'on_time',
+      stops: [],
+    });
+
+    const input = makeEvaluationInput(JOURNEY_SINGLE, makeSingleSegment());
+    const result = await service.evaluate(input);
+
+    // Terminal is still on_time — idempotency doesn't change the outcome
+    expect(result.outcome).toBe('on_time');
+    // journeyRepository.create MUST NOT have been called (idempotency short-circuit)
+    expect(mocks.mockJourneyRepo.create).not.toHaveBeenCalled();
+  });
+
+  it('AC-2 [on_time outbox resilience]: outbox.create throws on on_time path → still returns on_time (non-fatal)', async () => {
+    // AC-2: Coverage gap fix — non-fatal catch block in terminalFromSlwResult() on_time path.
+    // If outbox.create throws during delay.not-detected event, evaluate() MUST NOT propagate
+    // the error — it should swallow it and still return the on_time terminal.
+    // Self-fix (TD-3): covers lines 335-337 (catch block in on_time outbox.create).
+    const service = buildServiceWithSLW(mocks);
+
+    mocks.mockSequentialLegWalk.calculate.mockResolvedValue({
+      delay_minutes: 5, // below threshold → on_time
+      actual_final_arrival: `${TRAVEL_DATE}T10:35:00.000Z`,
+      scheduled_final_arrival: `${TRAVEL_DATE}T10:30:00.000Z`,
+      status: 'completed',
+    });
+    mocks.mockDarwinClient.getServiceWithStops.mockResolvedValue({
+      rid: '202606207108175',
+      delay_minutes: 5,
+      is_cancelled: false,
+      delay_reasons: null,
+      status: 'delayed',
+      stops: [],
+    });
+    // Outbox throws on delay.not-detected — must NOT propagate
+    mocks.mockOutboxRepo.create.mockRejectedValue(new Error('outbox DB down'));
+
+    const input = makeEvaluationInput(JOURNEY_SINGLE, makeSingleSegment());
+    // MUST NOT throw even though outbox failed
+    const result = await service.evaluate(input);
+    expect(result.outcome).toBe('on_time');
+    expect((result as { delay_minutes: number }).delay_minutes).toBe(5);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
