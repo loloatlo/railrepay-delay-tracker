@@ -107,8 +107,8 @@ describe('BL-338 AC-1: OtpRouterClient — real OTP HTTP client', () => {
       mode: 'RAIL',
       fromGtfsId: '1:DRBY',    // raw — client must strip to CRS
       toGtfsId:   '1:PLYMTH',  // raw — client must strip to CRS
-      startTime:  1749844140000,
-      endTime:    1749859680000,
+      startTime:  1781377740000,   // 2026-06-13T19:09:00.000Z (self-fix: was 1749844140000 = 2025-06-13)
+      endTime:    1781390880000,   // 2026-06-13T22:48:00.000Z (self-fix: was 1749859680000 = 2025-06-14)
       tripGtfsId: '1:202606137101164', // raw "1:RID" → must become RID
     }]));
 
