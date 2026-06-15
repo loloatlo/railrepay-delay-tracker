@@ -35,7 +35,8 @@ import { DelayEvaluationService } from './services/delay-evaluation.service.js';
 import { OutboxRepository } from './repositories/outbox-repository.js';
 import { createMetricsState } from './metrics/sync-query-metrics.js';
 import { TiplocRepository } from './repositories/tiploc-repository.js';
-import { SequentialLegWalk, type OtpClient } from './services/sequential-leg-walk.js';
+import { SequentialLegWalk } from './services/sequential-leg-walk.js';
+import { OtpRouterClient } from './clients/otp-router.js';
 
 // Configuration from environment
 const config = {
@@ -165,19 +166,14 @@ const tiplocRepository = new TiplocRepository({
   },
 });
 
-// BL-181: Stub OtpClient — OTP graph is expired; replacement route lookups are deferred.
-// Returns null (triggers needs_manual_review → no_data in evaluate()).
-// See TD-OTP-REPLACEMENT-001 for remediation tracking.
-const stubOtpClient: OtpClient = {
-  async findReplacementRoute() {
-    return null;
-  },
-};
+// BL-338: Real OtpRouterClient — wires delay-tracker to otp-router GraphQL endpoint.
+// Replaces the stub that returned null (TD-OTP-REPLACEMENT-001 resolved).
+const otpClient = new OtpRouterClient(process.env.OTP_ROUTER_URL ?? 'http://otp-router:8080');
 
 const sequentialLegWalk = new SequentialLegWalk({
   tiplocRepository,
   darwinClient,
-  otpClient: stubOtpClient,
+  otpClient,
 });
 
 const delayEvaluationService = new DelayEvaluationService({

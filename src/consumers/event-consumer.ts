@@ -15,7 +15,7 @@ import { DelayAlertRepository } from '../repositories/delay-alert-repository.js'
 import { OutboxRepository } from '../repositories/outbox-repository.js';
 import { DarwinIngestorClient } from '../clients/darwin-ingestor.js';
 import { TiplocRepository } from '../repositories/tiploc-repository.js';
-import type { OtpClient } from '../services/sequential-leg-walk.js';
+import { OtpRouterClient } from '../clients/otp-router.js';
 
 /**
  * Logger interface for dependency injection
@@ -132,13 +132,9 @@ export class EventConsumer {
       },
     });
 
-    // BL-181: Stub OtpClient — OTP graph is expired and replacement route lookups
-    // are not yet functional. Returns null (triggers assessment_pending fallback).
-    const otpClient: OtpClient = {
-      async findReplacementRoute() {
-        return null;
-      },
-    };
+    // BL-338: Real OtpRouterClient — wires delay-tracker to otp-router GraphQL endpoint.
+    // Replaces the stub that returned null (TD-OTP-REPLACEMENT-001 resolved).
+    const otpClient = new OtpRouterClient(process.env.OTP_ROUTER_URL ?? 'http://otp-router:8080');
 
     // Create handler with SequentialLegWalk dependencies (BL-181 AC-W6)
     this.journeyConfirmedHandler = new JourneyConfirmedHandler({

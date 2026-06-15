@@ -180,7 +180,18 @@ export class SequentialLegWalk {
       const destinationStop = this.findDestinationStop(darwinData.stops, destinationTiplocs);
 
       if (!destinationStop || destinationStop.actual_arrival === null) {
-        // Stop not found in Darwin data — treat as needing OTP replacement
+        // BL-338: Split on-time-through path from genuine absent-stop path.
+        // Non-final leg + service ran (not cancelled, no_data handled above) + destination absent
+        // → stop is a coverage gap, not a cancellation. Treat as on-time-through (delay 0)
+        // and continue to next leg.
+        // AC-3 ANTI-FRAUD: final leg with absent destination → always handleCancelledOrMissed.
+        // Note: darwinData.status !== 'no_data' is guaranteed by the early-return above (line 159).
+        const serviceRan = !darwinData.is_cancelled;
+        if (!isLastLeg && serviceRan) {
+          // On-time-through: coverage gap on a non-final leg — assume 0 delay, proceed
+          continue;
+        }
+        // Final leg OR service did not run → route to OTP/assessment
         return this.handleCancelledOrMissed(
           leg.originCrs,
           finalDestinationCrs,
@@ -194,11 +205,18 @@ export class SequentialLegWalk {
 
       // AC-13: If this is the final leg, compute and return the result
       if (isLastLeg) {
-        // BL-181 fix: Darwin returns time-only strings for actual_arrival (e.g. "10:15"),
-        // NOT full ISO datetimes. new Date("10:15") produces NaN, breaking the timestamp
-        // subtraction. Instead, use the pre-computed delay_minutes from the DarwinStop
-        // which Darwin already calculated correctly at the stop level.
-        const delayMinutes = stopDelayMinutes;
+        // BL-338 / BL-181: Compute delay as absolute diff when actualArrival is a full
+        // ISO datetime (e.g. replacement legs from OTP provide full timestamps).
+        // Darwin's real stop data returns time-only strings (e.g. "10:15") which produce
+        // NaN with new Date() — in that case fall back to pre-computed stopDelayMinutes.
+        // This ensures replacement legs compute delay vs original scheduledFinalArrival,
+        // not merely the replacement service's own schedule offset.
+        const parsedActual = new Date(actualArrival);
+        const parsedScheduled = new Date(scheduledFinalArrival);
+        const delayMinutes =
+          !isNaN(parsedActual.getTime()) && !isNaN(parsedScheduled.getTime())
+            ? Math.round((parsedActual.getTime() - parsedScheduled.getTime()) / 60000)
+            : stopDelayMinutes;
 
         return {
           delay_minutes: delayMinutes,
