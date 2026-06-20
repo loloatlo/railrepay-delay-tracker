@@ -66,7 +66,7 @@ export interface DelayEvaluationServiceDeps {
   // JourneyRepository.create() → Promise<MonitoredJourney>, which lacks an index signature
   // and cannot be directly assigned to `Promise<{ id?: string; [k: string]: unknown }>`.
   journeyRepository: JourneyRepository | { findByJourneyId: (id: string) => Promise<unknown>; create: (data: unknown) => Promise<unknown> };
-  delayAlertRepository: DelayAlertRepository | { findLatestByMonitoredJourneyId?: (id: string) => Promise<unknown>; create: (data: unknown) => Promise<unknown> };
+  delayAlertRepository: DelayAlertRepository | { findLatestByMonitoredJourneyId?: (id: string) => Promise<unknown>; create: (data: unknown) => Promise<unknown>; update?: (id: string, data: unknown) => Promise<unknown> };
   outboxRepository: OutboxRepository | { create: (data: unknown) => Promise<unknown> };
   darwinClient: DarwinIngestorClient | { getDelayInfo: (params: unknown) => Promise<{ delay_minutes: number | null; is_cancelled: boolean; delay_reasons?: Record<string, unknown> | null }>; getServiceWithStops?: (rid: string) => Promise<unknown> };
   /**
@@ -276,15 +276,32 @@ export class DelayEvaluationService {
       const monitoredJourney = await this.persistCompletedRow(input, rid, serviceDate);
 
       if (monitoredJourney?.id) {
-        await this.delayAlertRepository.create({
-          monitored_journey_id: monitoredJourney.id,
-          delay_minutes,
-          delay_reasons: null,
-          is_cancellation: false,
-          threshold_exceeded: true,
-          claim_triggered: false,
-          notification_sent: false,
-        });
+        // BL-359 AC-1: upsert — check for existing alert before creating a duplicate.
+        // If a stale alert row already exists for this monitored_journey, UPDATE it
+        // (so there is always exactly ONE canonical alert per monitored_journey).
+        const existingAlert = this.delayAlertRepository.findLatestByMonitoredJourneyId
+          ? await this.delayAlertRepository.findLatestByMonitoredJourneyId(monitoredJourney.id as string)
+          : null;
+
+        if (existingAlert && (existingAlert as { id?: unknown }).id && this.delayAlertRepository.update) {
+          await this.delayAlertRepository.update(
+            (existingAlert as { id: string }).id,
+            {
+              delay_minutes,
+              threshold_exceeded: true,
+            },
+          );
+        } else {
+          await this.delayAlertRepository.create({
+            monitored_journey_id: monitoredJourney.id,
+            delay_minutes,
+            delay_reasons: null,
+            is_cancellation: false,
+            threshold_exceeded: true,
+            claim_triggered: false,
+            notification_sent: false,
+          });
+        }
       }
 
       try {
