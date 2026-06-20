@@ -191,27 +191,41 @@ describe('BL-313: delay-tracker GET /delays/:journeyId — toc_code propagation'
       expect(res.body.toc_code).toBeNull();
     });
 
-    it('AC-2b: GET /delays/:journeyId on_time response also includes toc_code', async () => {
-      // AC-2b: The on_time path (monitoring_status=completed, no alert) must also
-      // carry toc_code. This path feeds into auto-poll resolution.
+    it('AC-2b: GET /delays/:journeyId completed+no-alert returns 404 (BL-357 — stale row forces re-eval)', async () => {
+      // BL-357 reconciliation (Test Lock self-fix — Jessie, 2026-06-20):
       //
-      // WILL FAIL on current code: on_time GetDelayHitResponse body has no toc_code.
+      // ORIGINAL INTENT: The on_time path (monitoring_status=completed, no alert)
+      //   must also carry toc_code. This was written when completed+no-alert returned
+      //   200 on_time.
+      //
+      // CHANGE UNDER BL-357: The completed+no-alert branch now returns 404 so that
+      //   the BFF's dtResult.statusCode===404 check fires ensureDelay() for a full
+      //   re-evaluation from journey_segments. A 200 on_time response here was the
+      //   root cause of multi-leg journeys receiving a stale single-leg verdict.
+      //
+      // TOC_CODE COVERAGE: The toc_code-propagation intent (AC-2b/AC-2c) is fully
+      //   preserved by the two tests above, which exercise the DELAYED path — the
+      //   live path where toc_code is surfaced in a 200 response body. The
+      //   completed-no-alert path no longer returns a 200 body, so toc_code cannot
+      //   be asserted here. Coverage is NOT lost.
+      //
+      // This test now asserts the NEW contract (404) for the completed-no-alert
+      // case, matching delay-query.handler.test.ts AC-3 and
+      // delay-query-endpoint.test.ts AC-3 (BL-357).
 
       const app = buildAppWithRepos(
         JOURNEY_ROW_WITH_NULL_TOC,  // status=completed, toc_code=null
-        null                         // no alert → on_time path
+        null                         // no alert → BL-357: 404, NOT 200 on_time
       );
 
       const res = await request(app)
         .get(`/delays/${VALID_JOURNEY_ID}`)
         .query({ user_id: VALID_USER_ID });
 
-      expect(res.status).toBe(200);
-      expect(res.body.status).toBe('on_time');
-      expect(res.body.delay_minutes).toBe(0);
-
-      // toc_code must be present (null for this row)
-      expect(res.body.toc_code).toBeNull();
+      // BL-357: completed+no-alert MUST return 404 (stale row forces ensure re-eval)
+      expect(res.status).toBe(404);
+      // Must NOT serve stale on_time verdict
+      expect(res.body.status).not.toBe('on_time');
     });
   });
 

@@ -42,7 +42,7 @@ const MONITORED_J1_ID = 'cc000001-0000-4000-8000-000000000001';
 // User B does NOT own J1 (forbidden scenario)
 const USER_B = 'aa000002-0000-4000-8000-000000000002';
 
-// Journey J2 has NO delay_alerts but monitoring_status='completed' → on_time
+// Journey J2 has NO delay_alerts but monitoring_status='completed' → 404 (BL-357: stale row forces ensure re-eval)
 const JOURNEY_J2 = 'bb000002-0000-4000-8000-000000000002';
 const MONITORED_J2_ID = 'cc000002-0000-4000-8000-000000000002';
 const USER_J2 = 'aa000003-0000-4000-8000-000000000003';
