@@ -333,20 +333,50 @@ describe('BL-338 AC-2: SLW on-time-through — non-final leg, destination absent
     expect(mockDarwinClient.getServiceWithStops).toHaveBeenNthCalledWith(2, SEG2_DBY_PLY.rid);
   });
 
-  it('AC-2c: on-time-through does NOT apply when Darwin status is no_data (service unknown) — must return assessment_pending', async () => {
-    // When Darwin returns no_data for a NON-FINAL leg, it is genuinely unknown.
-    // This must NOT be treated as on-time-through — status must be assessment_pending.
+  it('AC-2c: non-final no_data leg → on-time-through (walk CONTINUES to leg 2, real final-leg delay returned)', async () => {
+    /**
+     * POLICY CHANGE — superseded by BL-356 (2026-06-20):
+     *
+     * OLD assertion (now WRONG for 3-leg journeys, hence the BL-356 bug):
+     *   non-final no_data → assessment_pending + walk exits early after 1 Darwin call
+     *
+     * NEW policy (BL-356 fix, sequential-leg-walk.ts non-final no_data branch):
+     *   non-final no_data → on-time-through (continue to next leg), consistent with
+     *   BL-338's stop-level on-time-through (destinationStop===null on a running service).
+     *   Only the FINAL leg's no_data still returns assessment_pending (AC-3 anti-fraud guard).
+     *
+     * WHY: for a 3-leg journey where leg-1 is no_data, the old early-exit caused
+     *   the walk to never evaluate the delayed final leg → false "not eligible" result.
+     *   The fix: treat non-final no_data as "we have no data for this intermediate leg —
+     *   assume on-time-through and continue to the next leg." This is the same conservative
+     *   assumption made for non-final legs with an absent Darwin stop (BL-338 AC-2a/b).
+     *
+     * ANTI-FRAUD (IMMUTABLE): the FINAL leg's no_data still returns assessment_pending —
+     *   tested in AC-3 and in BL-356 AC-1-boundary. This test covers the NON-FINAL case only.
+     *
+     * Differentiating data:
+     *   - 2-leg journey; leg-1 non-final + no_data; leg-2 final + 56-min delayed
+     *   - Darwin called TWICE after the fix (was once before)
+     *   - Result: status:'completed', delay_minutes:56 (was assessment_pending before)
+     */
     const darwinNoData: DarwinServiceWithStops = {
       rid: SEG1_NOT_DBY.rid,
       delay_minutes: null,
       is_cancelled: false,
       delay_reasons: null,
-      status: 'no_data', // <-- key: no_data is different from delayed/on_time with absent stop
+      status: 'no_data', // non-final leg → on-time-through (BL-356 new policy)
       stops: null,
     };
 
-    mockDarwinClient.getServiceWithStops.mockResolvedValueOnce(darwinNoData);
-    mockTiplocRepo.getTiplocsByCrs.mockResolvedValue(['DRBY']);
+    mockDarwinClient.getServiceWithStops
+      .mockResolvedValueOnce(darwinNoData)            // leg 1 (non-final): no_data → on-time-through
+      .mockResolvedValueOnce(DARWIN_SEG2_PLY_DELAYED); // leg 2 (final): 56-min delay
+
+    mockTiplocRepo.getTiplocsByCrs.mockImplementation(async (crs: string) => {
+      if (crs === 'DBY') return ['DRBY'];
+      if (crs === 'PLY') return ['PLYMTH'];
+      return [];
+    });
 
     walk = new SequentialLegWalk({
       tiplocRepository: mockTiplocRepo,
@@ -377,11 +407,13 @@ describe('BL-338 AC-2: SLW on-time-through — non-final leg, destination absent
       scheduledFinalArrival: NOT_PLY_SCHEDULED_FINAL_ARRIVAL,
     });
 
-    // no_data status must NOT be treated as on-time-through
-    expect(result.status).toBe('assessment_pending');
-    expect(result.delay_minutes).toBeNull();
-    // Leg 2 must NOT have been evaluated (walk exits early on no_data)
-    expect(mockDarwinClient.getServiceWithStops).toHaveBeenCalledTimes(1);
+    // NEW POLICY: non-final no_data → on-time-through; walk continues to leg 2
+    expect(result.status).toBe('completed');
+    expect(result.delay_minutes).toBe(56); // real delay from final leg
+    // Both Darwin calls were made (leg-1 on-time-through did NOT cause early exit)
+    expect(mockDarwinClient.getServiceWithStops).toHaveBeenCalledTimes(2);
+    // OTP must NOT be called for a non-final no_data on-time-through
+    expect(mockOtpClient.findReplacementRoute).not.toHaveBeenCalled();
   });
 
   it('AC-2d: on-time-through does NOT apply when Darwin reports is_cancelled=true — must call OTP', async () => {
