@@ -225,10 +225,14 @@ describe('GET /delays/:journeyId — integration (Testcontainers PG)', () => {
   });
 
   // -------------------------------------------------------------------------
-  // AC-3: on_time (real DB)
+  // AC-3: completed+no-alert → 404 (real DB) — BL-357
   // -------------------------------------------------------------------------
-  describe('AC-3: on_time journey (monitoring_status=completed, no alerts)', () => {
-    it('should return status=on_time, delay_minutes=0, last_observed_at from last_checked_at', async () => {
+  // BL-357: A completed+no-alert row is a stale single-leg evaluation.
+  // Returning 200 on_time prevented the BFF's ensure branch from firing on
+  // multi-leg journeys. The handler must now return 404 so the BFF calls
+  // ensureDelay() for a full re-evaluation from journey_segments.
+  describe('AC-3: completed+no-alert row returns 404 (BL-357 — stale row forces ensure re-eval)', () => {
+    it('should return 404 (not 200 on_time) when monitoring_status=completed and no delay_alerts row exists', async () => {
       const lastCheckedAt = new Date('2026-04-28T11:00:00Z');
       await seedJourney(pool, {
         journeyId: INT_JOURNEY_ON_TIME,
@@ -236,15 +240,14 @@ describe('GET /delays/:journeyId — integration (Testcontainers PG)', () => {
         monitoringStatus: 'completed',
         lastCheckedAt,
       });
+      // No seedAlert call — row has no delay_alerts (the stale case)
 
       const res = await request(app).get(`/delays/${INT_JOURNEY_ON_TIME}?user_id=${INT_USER_ON_TIME}`);
 
-      expect(res.status).toBe(200);
-      expect(res.body.status).toBe('on_time');
-      expect(res.body.delay_minutes).toBe(0);
-      expect(res.body.cancelled).toBe(false);
-      expect(res.body.journey_id).toBe(INT_JOURNEY_ON_TIME);
-      expect(new Date(res.body.last_observed_at).toISOString()).toBe(lastCheckedAt.toISOString());
+      // BL-357: must be 404 so BFF calls ensureDelay() for re-evaluation
+      expect(res.status).toBe(404);
+      // Must not serve stale on_time verdict
+      expect(res.body.status).not.toBe('on_time');
     });
   });
 

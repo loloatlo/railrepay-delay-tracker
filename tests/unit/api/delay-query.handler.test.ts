@@ -202,10 +202,14 @@ describe('delay-query.handler (unit)', () => {
   });
 
   // -------------------------------------------------------------------------
-  // AC-3: Happy path — on_time
+  // AC-3: completed + no alert → 404 (BL-357)
   // -------------------------------------------------------------------------
-  describe('AC-3: on_time when monitoring_status=completed and no delay_alerts', () => {
-    it('should return status=on_time, delay_minutes=0, cancelled=false, last_observed_at=last_checked_at', async () => {
+  // BL-357: A completed+no-alert row represents a stale single-leg evaluation.
+  // Returning 200 on_time here caused the BFF to skip ensureDelay(), so multi-leg
+  // journeys received a stale verdict. The handler must now 404 so the BFF's
+  // dtResult.statusCode===404 branch fires and calls ensureDelay() for re-eval.
+  describe('AC-3: completed+no-alert row returns 404 (BL-357 — stale row forces ensure re-eval)', () => {
+    it('should return 404 (not 200 on_time) when monitoring_status=completed and no delay alert exists', async () => {
       const mockJourneyRepo = {
         findByJourneyId: vi.fn().mockResolvedValue(
           buildMonitoredJourney(JOURNEY_J2, USER_J2, MONITORED_J2_ID, 'completed', LAST_CHECKED_AT),
@@ -218,17 +222,13 @@ describe('delay-query.handler (unit)', () => {
       const app = buildApp(mockJourneyRepo, mockAlertRepo);
       const res = await request(app).get(`/delays/${JOURNEY_J2}?user_id=${USER_J2}`);
 
-      expect(res.status).toBe(200);
-      expect(res.body.status).toBe('on_time');
-      expect(res.body.delay_minutes).toBe(0);
-      expect(res.body.cancelled).toBe(false);
-      expect(res.body.journey_id).toBe(JOURNEY_J2);
-      // last_observed_at should be last_checked_at (primary) or scheduled_arrival (fallback)
-      const lastObserved = new Date(res.body.last_observed_at);
-      expect(lastObserved.getTime()).toBeGreaterThan(0);
+      // BL-357: must be 404 so BFF calls ensureDelay() for re-evaluation
+      expect(res.status).toBe(404);
+      // Must not serve stale on_time verdict
+      expect(res.body.status).not.toBe('on_time');
     });
 
-    it('should fall back to scheduled_arrival when last_checked_at is null', async () => {
+    it('should return 404 when monitoring_status=completed, no alert, and last_checked_at is null', async () => {
       const mockJourneyRepo = {
         findByJourneyId: vi.fn().mockResolvedValue(
           buildMonitoredJourney(JOURNEY_J2, USER_J2, MONITORED_J2_ID, 'completed', null /* last_checked_at = null */),
@@ -241,10 +241,9 @@ describe('delay-query.handler (unit)', () => {
       const app = buildApp(mockJourneyRepo, mockAlertRepo);
       const res = await request(app).get(`/delays/${JOURNEY_J2}?user_id=${USER_J2}`);
 
-      expect(res.status).toBe(200);
-      expect(res.body.status).toBe('on_time');
-      // Fallback: last_observed_at == scheduled_arrival
-      expect(new Date(res.body.last_observed_at).toISOString()).toBe(SCHEDULED_ARRIVAL.toISOString());
+      // BL-357: null last_checked_at edge-case — still 404, not 200 on_time
+      expect(res.status).toBe(404);
+      expect(res.body.status).not.toBe('on_time');
     });
   });
 
@@ -564,7 +563,11 @@ describe('delay-query.handler (unit)', () => {
       expect(logMeta?.outcome).toBe('pending');
     });
 
-    it('should log outcome=on_time for a completed journey with no alerts', async () => {
+    it('should log outcome=unknown for a completed journey with no alerts (BL-357: 404 branch)', async () => {
+      // BL-357: completed+no-alert now returns 404 (same branch as not-found).
+      // The log outcome for the 404 path is 'unknown', matching AC-6 (journey not found).
+      // The old assertion (outcome='on_time') is stale — the on_time branch no longer fires
+      // for completed+no-alert rows; they fall through to the 404 not-found branch.
       const mockJourneyRepo = {
         findByJourneyId: vi.fn().mockResolvedValue(
           buildMonitoredJourney(JOURNEY_J2, USER_J2, MONITORED_J2_ID, 'completed'),
@@ -579,7 +582,7 @@ describe('delay-query.handler (unit)', () => {
         (args) => args.length >= 2 && typeof args[1] === 'object' && args[1] !== null,
       );
       const logMeta = structuredCalls[0]?.[1] as Record<string, unknown>;
-      expect(logMeta?.outcome).toBe('on_time');
+      expect(logMeta?.outcome).toBe('unknown');
     });
 
     it('should use a generated correlation_id when X-Correlation-ID header is absent', async () => {
