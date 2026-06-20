@@ -155,8 +155,16 @@ export class SequentialLegWalk {
       // AC-9: Query Darwin for this leg's stop data
       const darwinData = await this.darwinClient.getServiceWithStops(leg.rid);
 
-      // AC-14 (no_data): Darwin has no record (or returned undefined) — cannot calculate delay
+      // AC-14 (no_data): Darwin has no record (or returned undefined) — cannot calculate delay.
+      // BL-356: For a NON-FINAL leg with no_data, treat as on-time-through (continue to next leg).
+      // This is the service-level parallel to BL-338's stop-level on-time-through
+      // (destinationStop===null on a running service). No OTP call — not a genuine cancellation.
+      // ANTI-FRAUD GUARD (IMMUTABLE): FINAL leg with no_data → assessment_pending (never fabricate).
       if (!darwinData || darwinData.status === 'no_data') {
+        if (!isLastLeg) {
+          // Non-final leg: service unknown but not cancelled — treat as on-time-through
+          continue;
+        }
         return {
           delay_minutes: null,
           actual_final_arrival: null,

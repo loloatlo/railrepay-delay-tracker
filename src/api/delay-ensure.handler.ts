@@ -102,15 +102,18 @@ export class DelayEnsureHandler {
       return;
     }
 
-    // Derive top-level journey fields from segments[0] when not supplied in body
+    // Derive top-level journey fields from segments when not supplied in body.
+    // BL-356: origin fields come from seg0 (first segment); destination fields come from the
+    // LAST segment so that multi-leg journeys use the real final destination, not an interchange.
     const seg0 = segments[0];
+    const lastSeg = segments[segments.length - 1];
     const input: EvaluationInput = {
       journey_id: body.journey_id as string,
       user_id: body.user_id as string,
       origin_crs: typeof body.origin_crs === 'string' ? body.origin_crs : seg0.origin_crs,
-      destination_crs: typeof body.destination_crs === 'string' ? body.destination_crs : seg0.destination_crs,
+      destination_crs: typeof body.destination_crs === 'string' ? body.destination_crs : lastSeg.destination_crs,
       departure_datetime: typeof body.departure_datetime === 'string' ? body.departure_datetime : seg0.scheduled_departure,
-      arrival_datetime: typeof body.arrival_datetime === 'string' ? body.arrival_datetime : seg0.scheduled_arrival,
+      arrival_datetime: typeof body.arrival_datetime === 'string' ? body.arrival_datetime : lastSeg.scheduled_arrival,
       toc_code: typeof body.toc_code === 'string' ? body.toc_code : (seg0.toc_code ?? null),
       segments,
       correlation_id: (body.correlation_id as string) ?? undefined,
