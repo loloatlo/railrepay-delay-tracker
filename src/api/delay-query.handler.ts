@@ -248,42 +248,21 @@ export class DelayQueryHandler {
     const monitoringStatus = monitoredJourney.monitoring_status;
 
     if (monitoringStatus === 'completed') {
-      // AC-3: on_time — last_observed_at = last_checked_at ?? scheduled_arrival
-      const lastCheckedAt = monitoredJourney.last_checked_at;
-      const scheduledArrival = monitoredJourney.scheduled_arrival;
-
-      let lastObservedAt: string;
-      if (lastCheckedAt) {
-        lastObservedAt = lastCheckedAt.toISOString();
-      } else {
-        // Fall back to scheduled_arrival (may be Date or string from DB)
-        const arrival = scheduledArrival ?? new Date();
-        lastObservedAt = arrival instanceof Date
-          ? arrival.toISOString()
-          : new Date(arrival).toISOString();
-      }
-
-      const body: GetDelayHitResponse = {
-        journey_id: journeyId,
-        delay_minutes: 0,
-        cancelled: false,
-        last_observed_at: lastObservedAt,
-        status: 'on_time',
-        // BL-313 AC-2b: include toc_code from monitored_journey row (null when absent)
-        toc_code: monitoredJourney.toc_code ?? null,
-      };
-
-      this.emitLog('GET /delays/:journeyId on_time', {
+      // BL-357: completed+no-alert is a stale row from a prior incomplete single-leg
+      // evaluation. Return 404 so the BFF's dtResult.statusCode===404 branch fires
+      // ensureDelay() for full re-evaluation. Log outcome='unknown' to match the
+      // genuine-not-found path (AC-13).
+      this.emitLog('GET /delays/:journeyId journey not found', {
         correlation_id: correlationId,
         journey_id: journeyId,
         user_id: userId,
-        outcome: 'on_time' as OutcomeKind,
+        outcome: 'unknown' as OutcomeKind,
         duration_ms: durationMs,
         component: 'delay-tracker',
         route: '/delays/:journeyId',
       });
-      this.recordMetrics('on_time', durationMs);
-      res.status(200).json(body);
+      this.recordMetrics('unknown', durationMs);
+      res.status(404).json({ error: 'unknown_journey' });
       return;
     }
 
