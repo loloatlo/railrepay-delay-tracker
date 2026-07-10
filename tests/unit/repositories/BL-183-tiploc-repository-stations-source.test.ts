@@ -454,25 +454,31 @@ describe('BL-183 (TD-TIPLOC-STATIONS-001): AC-6 — SequentialLegWalk accepts ne
 });
 
 // ---------------------------------------------------------------------------
-// AC-10: seed-data directory and old fixture file must be removed
+// AC-10: seed-data handling
+//
+// RECONCILED under TD-DT-SEED (2026-07-10, Test Lock).
+// AC-10a/b originally asserted migrations/seed-data/ must be DELETED. That
+// requirement contradicted AC-10c (keep the add-tiploc-crs-mapping migration
+// for audit trail): the retained migration reads seed-data/tiploc-crs-mapping.json
+// at runtime, so deleting the file made every FRESH-database deploy die with
+// ENOENT in 1775386062312_add-tiploc-crs-mapping.cjs (dev deploy 2026-07-10).
+// The corrected requirement: the seed file must SHIP for as long as the
+// migration that reads it exists. The original AC-10 intent — fabricated data
+// must not be a runtime source — is still enforced by the drop migration
+// (1775386100000) and the TiplocRepository stations-source tests above.
+// See tests/migrations/TD-DT-SEED-seed-data-presence.test.ts for the full
+// shape/content assertions.
 // ---------------------------------------------------------------------------
 
-describe('BL-183 (TD-TIPLOC-STATIONS-001): AC-10 — seed-data directory removed', () => {
+describe('BL-183 (TD-TIPLOC-STATIONS-001): AC-10 — seed-data handling (reconciled under TD-DT-SEED)', () => {
 
-  // AC-10a: tiploc-crs-mapping.json should no longer exist
-  it('AC-10a: migrations/seed-data/tiploc-crs-mapping.json should not exist after remediation', () => {
-    // This file contained 338 fabricated rows. It must be deleted.
-    // The test FAILS (RED) until Blake deletes the file.
+  // AC-10a/b (reconciled): the seed file must exist because the retained
+  // migration (AC-10c) reads it at runtime on every fresh database.
+  it('AC-10a/b (reconciled): migrations/seed-data/tiploc-crs-mapping.json must ship while migration 1775386062312 reads it', () => {
     const fileExists = fs.existsSync(SEED_DATA_FILE);
-    expect(fileExists).toBe(false);
-  });
-
-  // AC-10b: seed-data directory should no longer exist
-  it('AC-10b: migrations/seed-data/ directory should not exist after remediation', () => {
-    // With the tiploc-crs-mapping.json gone, the directory should be deleted too.
-    // The test FAILS (RED) until Blake deletes the directory.
+    expect(fileExists).toBe(true);
     const dirExists = fs.existsSync(SEED_DATA_DIR);
-    expect(dirExists).toBe(false);
+    expect(dirExists).toBe(true);
   });
 
   // AC-10c: The original add-tiploc-crs-mapping migration file must be retained
