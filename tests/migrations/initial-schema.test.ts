@@ -3,6 +3,7 @@ import { Pool } from 'pg';
 import { PostgreSqlContainer, StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { execSync } from 'child_process';
 import path from 'path';
+import fs from 'fs';
 
 describe('delay_tracker schema migrations', () => {
   let container: StartedPostgreSqlContainer;
@@ -394,7 +395,19 @@ describe('delay_tracker schema migrations', () => {
       expect(result.rows).toHaveLength(1);
 
       // Run down migration
-      execSync(`npx node-pg-migrate down -m "${migrationDir}"`, {
+      // Test Lock reconcile (dt-ci-green): a bare `down` rolls back only ONE
+      // migration (the count is positional and defaults to 1). That matched
+      // this test's intent when initial-schema was the only migration, but four
+      // migrations have landed since, so `down` only reverted the newest one
+      // and the delay_tracker schema (dropped by initial-schema's down())
+      // survived, failing the assertion below on every run. Roll back the full
+      // stack — the count is derived from the migrations directory so the test
+      // does not rot again as migrations accrue. Semantic intent unchanged:
+      // a full rollback must leave no delay_tracker schema behind.
+      const migrationCount = fs
+        .readdirSync(migrationDir)
+        .filter((f) => /^\d+_.+\.c?js$/.test(f)).length;
+      execSync(`npx node-pg-migrate down ${migrationCount} -m "${migrationDir}"`, {
         cwd: path.join(__dirname, '../..'),
         env: { ...process.env, DATABASE_URL: rollbackContainer.getConnectionUri() },
       });
