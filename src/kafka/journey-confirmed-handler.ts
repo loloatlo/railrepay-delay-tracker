@@ -65,9 +65,30 @@ interface JourneyConfirmedHandlerDeps {
   otpClient?: OtpClient;
 }
 
+/**
+ * Legacy consumer group id. Production does NOT set
+ * KAFKA_JOURNEY_CONFIRMED_GROUP_ID, so it keeps exactly this group
+ * (and its committed offsets). Do not change this literal.
+ */
+const DEFAULT_JOURNEY_CONFIRMED_GROUP_ID = 'delay-tracker-consumer-group';
+
+/**
+ * Resolve the journey.confirmed consumer group id.
+ * Uses KAFKA_JOURNEY_CONFIRMED_GROUP_ID when set to a non-blank value;
+ * empty/whitespace values are treated as absent, mirroring the
+ * createConsumerConfig() validation pattern in src/consumers/config.ts.
+ */
+function resolveJourneyConfirmedGroupId(): string {
+  const value = process.env.KAFKA_JOURNEY_CONFIRMED_GROUP_ID;
+  if (!value || value.trim() === '') {
+    return DEFAULT_JOURNEY_CONFIRMED_GROUP_ID;
+  }
+  return value;
+}
+
 export class JourneyConfirmedHandler {
   readonly topic = 'journey.confirmed';
-  readonly groupId = 'delay-tracker-consumer-group';
+  readonly groupId: string = resolveJourneyConfirmedGroupId();
 
   private journeyRepository: JourneyRepository;
   private delayAlertRepository: DelayAlertRepository;
