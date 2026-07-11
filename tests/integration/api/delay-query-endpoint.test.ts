@@ -144,7 +144,10 @@ describe('GET /delays/:journeyId — integration (Testcontainers PG)', () => {
 
     // Run all migrations so the full schema including darwin_unavailable status is present
     const migrationDir = path.resolve(__dirname, '../../../migrations');
-    execSync(`npx node-pg-migrate up -m "${migrationDir}" --migrations-schema delay_tracker --migrations-table pgmigrations --create-schema`, {
+    // Test Lock reconcile (dt-ci-green): --create-migrations-schema is required —
+    // --create-schema alone never creates the schema that holds pgmigrations, so
+    // this beforeAll failed deterministically on every fresh database.
+    execSync(`npx node-pg-migrate up -m "${migrationDir}" --migrations-schema delay_tracker --migrations-table pgmigrations --create-schema --create-migrations-schema`, {
       cwd: path.resolve(__dirname, '../../..'),
       env: { ...process.env, DATABASE_URL: container.getConnectionUri() },
     });

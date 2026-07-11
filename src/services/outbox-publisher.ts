@@ -181,16 +181,20 @@ export class OutboxPublisher {
     try {
       await client.query('BEGIN');
 
-      // Find pending events with row locking
-      const events = await this.repository.findPendingForProcessing(100);
+      // Find pending events with row locking.
+      // All queries MUST run on the transaction's client: previously they ran
+      // on the pool (separate autocommit connections), so the FOR UPDATE SKIP
+      // LOCKED locks were released immediately and two concurrent processors
+      // could both select — and publish — the same pending event.
+      const events = await this.repository.findPendingForProcessing(100, client);
 
       for (const event of events) {
         try {
           await this.messageBroker.publish(event);
-          await this.repository.markProcessed(event.id!);
+          await this.repository.markProcessed(event.id!, client);
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          await this.repository.markFailed(event.id!, errorMessage);
+          await this.repository.markFailed(event.id!, errorMessage, client);
         }
       }
 

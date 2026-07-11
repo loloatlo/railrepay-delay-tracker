@@ -40,9 +40,13 @@ describe('Migration: add-darwin-unavailable-status', () => {
     });
 
     // Run ALL migrations to get to current state (including darwin_unavailable)
+    // Test Lock reconcile (dt-ci-green): --create-migrations-schema added —
+    // --create-schema only creates the --schema option's schema (unset here),
+    // so the pgmigrations table creation failed deterministically on every
+    // fresh database ("schema delay_tracker does not exist").
     const migrationDir = path.join(__dirname, '../../migrations');
     execSync(
-      `npx node-pg-migrate up -m "${migrationDir}" --migrations-schema delay_tracker --migrations-table pgmigrations --create-schema`,
+      `npx node-pg-migrate up -m "${migrationDir}" --migrations-schema delay_tracker --migrations-table pgmigrations --create-schema --create-migrations-schema`,
       {
         cwd: path.join(__dirname, '../..'),
         env: { ...process.env, DATABASE_URL: container.getConnectionUri() },
@@ -288,9 +292,27 @@ describe('Migration: add-darwin-unavailable-status', () => {
       expect(parseInt(beforeRollback.rows[0].count)).toBe(2);
 
       // Run down migration
+      // Test Lock reconcile (dt-ci-green): the original `--count 1` had two
+      // defects. (1) node-pg-migrate's down count is POSITIONAL (`down N`);
+      // `--count` is silently ignored, so the flag only ever exercised the
+      // default of 1. (2) A count of 1 assumed this migration (1770714617404)
+      // was the newest — true when the test was written, but three migrations
+      // have landed on top since, so only the latest was rolled back and the
+      // darwin_unavailable rows were never reset (verified against a live
+      // Postgres 15 container). Compute the count so the rollback always
+      // reaches THIS migration's down() regardless of how many later
+      // migrations exist. Semantic intent unchanged: the down() of
+      // add-darwin-unavailable-status must reset darwin_unavailable -> pending_rid.
       const migrationDir = path.join(__dirname, '../../migrations');
+      const fs = await import('fs');
+      const DARWIN_MIGRATION_TS = 1770714617404;
+      const downCount = fs
+        .readdirSync(migrationDir)
+        .filter((f) => /^\d+_.+\.c?js$/.test(f))
+        .filter((f) => parseInt(f.split('_')[0], 10) >= DARWIN_MIGRATION_TS)
+        .length;
       execSync(
-        `npx node-pg-migrate down -m "${migrationDir}" --migrations-schema delay_tracker --migrations-table pgmigrations --create-schema --count 1`,
+        `npx node-pg-migrate down ${downCount} -m "${migrationDir}" --migrations-schema delay_tracker --migrations-table pgmigrations`,
         {
           cwd: path.join(__dirname, '../..'),
           env: { ...process.env, DATABASE_URL: container.getConnectionUri() },
@@ -310,7 +332,7 @@ describe('Migration: add-darwin-unavailable-status', () => {
 
       // Re-run up migration for subsequent tests
       execSync(
-        `npx node-pg-migrate up -m "${migrationDir}" --migrations-schema delay_tracker --migrations-table pgmigrations --create-schema`,
+        `npx node-pg-migrate up -m "${migrationDir}" --migrations-schema delay_tracker --migrations-table pgmigrations --create-schema --create-migrations-schema`,
         {
           cwd: path.join(__dirname, '../..'),
           env: { ...process.env, DATABASE_URL: container.getConnectionUri() },

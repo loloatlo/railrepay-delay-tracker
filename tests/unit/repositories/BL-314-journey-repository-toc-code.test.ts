@@ -798,7 +798,14 @@ describeWithDocker(
       const repo = new JourneyRepository({ pool });
 
       // INSERT directly via SQL to bypass any application-level create() gaps
-      const externalJourneyId = `bl314-rt-${Date.now()}`;
+      // Test Lock reconcile (dt-ci-green): journey_id is a uuid column; the
+      // original `bl314-rt-${Date.now()}` literal was rejected by Postgres with
+      // 22P02 "invalid input syntax for type uuid" on every run (this Docker-
+      // gated test evidently never ran before it landed). A random UUID
+      // preserves the semantic intent: a unique external journey id that
+      // round-trips through the real DB.
+      const { randomUUID } = await import('crypto');
+      const externalJourneyId = randomUUID();
       await pool.query(`
         INSERT INTO delay_tracker.monitored_journeys (
           user_id, journey_id, service_date, origin_crs, destination_crs,
@@ -827,7 +834,10 @@ describeWithDocker(
 
       const repo = new JourneyRepository({ pool });
 
-      const externalJourneyId = `bl314-rt-null-${Date.now()}`;
+      // Test Lock reconcile (dt-ci-green): valid UUID for the uuid journey_id
+      // column — see the sibling round-trip test for the full justification.
+      const { randomUUID } = await import('crypto');
+      const externalJourneyId = randomUUID();
       // Insert WITHOUT toc_code — simulates a pre-migration row (column defaults to NULL)
       await pool.query(`
         INSERT INTO delay_tracker.monitored_journeys (
@@ -861,7 +871,22 @@ describeWithDocker(
 
       const migrationDir = path.join(__dirname, '../../../migrations');
 
-      execSync(`npx node-pg-migrate down --count 1 -m "${migrationDir}"`, {
+      // Test Lock reconcile (dt-ci-green): the original `--count 1` assumed the
+      // toc_code migration (1779982907741) was the newest — and node-pg-migrate's
+      // down count is positional anyway (`down N`); `--count` is silently
+      // ignored. Compute how many migrations sit at-or-above the toc_code one so
+      // the rollback always reaches its down() as later migrations accrue.
+      // Semantic intent unchanged: the toc_code migration's down() must remove
+      // the column.
+      const fsMod = await import('fs');
+      const TOC_MIGRATION_TS = 1779982907741;
+      const downCount = fsMod
+        .readdirSync(migrationDir)
+        .filter((f) => /^\d+_.+\.c?js$/.test(f))
+        .filter((f) => parseInt(f.split('_')[0], 10) >= TOC_MIGRATION_TS)
+        .length;
+
+      execSync(`npx node-pg-migrate down ${downCount} -m "${migrationDir}"`, {
         cwd: path.join(__dirname, '../../..'),
         env: {
           ...process.env,

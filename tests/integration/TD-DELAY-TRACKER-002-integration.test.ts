@@ -109,7 +109,12 @@ describe('TD-DELAY-TRACKER-002: Integration Tests (Real PostgreSQL)', () => {
 
     // Run migrations to create schema (including darwin_unavailable status)
     const migrationDir = path.join(__dirname, '../../migrations');
-    execSync(`npx node-pg-migrate up -m "${migrationDir}" --migrations-schema delay_tracker --migrations-table pgmigrations`, {
+    // Test Lock reconcile (dt-ci-green): --create-migrations-schema is required —
+    // node-pg-migrate only creates the pgmigrations schema with that flag
+    // (--create-schema alone covers the --schema option, which is unset here).
+    // Without it this beforeAll failed deterministically on every fresh database:
+    // "Unable to ensure migrations table: schema delay_tracker does not exist".
+    execSync(`npx node-pg-migrate up -m "${migrationDir}" --migrations-schema delay_tracker --migrations-table pgmigrations --create-schema --create-migrations-schema`, {
       cwd: path.join(__dirname, '../..'),
       env: { ...process.env, DATABASE_URL: container.getConnectionUri() },
     });
@@ -282,7 +287,19 @@ describe('TD-DELAY-TRACKER-002: Integration Tests (Real PostgreSQL)', () => {
       expect(journeys.rows).toHaveLength(1);
       expect(journeys.rows[0].user_id).toBe('123e4567-e89b-12d3-a456-426614174020');
       expect(journeys.rows[0].rid).toBe('202603150800456');
-      expect(journeys.rows[0].service_date).toBe('2026-03-15');
+      // Test Lock reconcile (dt-ci-green): node-postgres returns DATE columns
+      // as JS Date objects (at midnight), never as strings, so the original
+      // `.toBe('2026-03-15')` could not pass — this assertion had never
+      // executed because the suite's beforeAll migration command failed on
+      // every run. Compare calendar date parts (timezone-agnostic) so the
+      // semantic expectation — service_date === 15 March 2026 — is unchanged.
+      const serviceDate: Date = journeys.rows[0].service_date;
+      expect(serviceDate).toBeInstanceOf(Date);
+      expect(
+        `${serviceDate.getFullYear()}-` +
+          `${String(serviceDate.getMonth() + 1).padStart(2, '0')}-` +
+          `${String(serviceDate.getDate()).padStart(2, '0')}`
+      ).toBe('2026-03-15');
       expect(journeys.rows[0].origin_crs).toBe('KGX');
       expect(journeys.rows[0].destination_crs).toBe('EDN');
       expect(journeys.rows[0].monitoring_status).toBe('active');

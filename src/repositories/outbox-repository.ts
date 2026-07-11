@@ -79,8 +79,16 @@ export class OutboxRepository {
 
   /**
    * Find pending events with row locking for concurrent processing
+   *
+   * Pass the transaction's PoolClient: FOR UPDATE row locks only exist for the
+   * lifetime of the transaction on the connection that acquired them. Running
+   * this on the pool (a fresh autocommit connection) releases the locks the
+   * instant the SELECT returns, which allowed concurrent processors to publish
+   * the same event twice.
    */
-  async findPendingForProcessing(limit = 100): Promise<OutboxEvent[]> {
+  async findPendingForProcessing(limit = 100, client?: PoolClient): Promise<OutboxEvent[]> {
+    const queryClient = client || this.pool;
+
     const query = `
       SELECT * FROM ${this.schema}.${this.table}
       WHERE status = 'pending'
@@ -89,27 +97,31 @@ export class OutboxRepository {
       FOR UPDATE SKIP LOCKED
     `;
 
-    const result = await this.pool.query(query, [limit]);
+    const result = await queryClient.query(query, [limit]);
     return result.rows.map(row => this.mapRow(row));
   }
 
   /**
    * Mark an event as processed
    */
-  async markProcessed(id: string): Promise<void> {
+  async markProcessed(id: string, client?: PoolClient): Promise<void> {
+    const queryClient = client || this.pool;
+
     const query = `
       UPDATE ${this.schema}.${this.table}
       SET status = 'processed', processed_at = NOW()
       WHERE id = $1
     `;
 
-    await this.pool.query(query, [id]);
+    await queryClient.query(query, [id]);
   }
 
   /**
    * Mark an event as failed with error message and increment retry count
    */
-  async markFailed(id: string, errorMessage: string): Promise<void> {
+  async markFailed(id: string, errorMessage: string, client?: PoolClient): Promise<void> {
+    const queryClient = client || this.pool;
+
     const query = `
       UPDATE ${this.schema}.${this.table}
       SET status = 'failed',
@@ -118,7 +130,7 @@ export class OutboxRepository {
       WHERE id = $1
     `;
 
-    await this.pool.query(query, [id, errorMessage]);
+    await queryClient.query(query, [id, errorMessage]);
   }
 
   /**
