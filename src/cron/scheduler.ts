@@ -118,7 +118,7 @@ export class CronScheduler {
       if (journeys.length > 0) {
         // Check delays for journeys - filter to only those with valid RIDs
         const journeysWithRids = journeys
-          .filter(j => j.rid != null)
+          .filter(j => j.rid !== null && j.rid !== undefined)
           .map(j => ({ id: j.id!, rid: j.rid! }));
 
         if (journeysWithRids.length > 0) {

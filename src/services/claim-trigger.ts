@@ -7,7 +7,6 @@
 
 import {
   ClaimTriggerResult,
-  ClaimTriggerReason,
   ClaimTriggerApiResponse,
 } from '../types.js';
 

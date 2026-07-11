@@ -84,7 +84,7 @@ export class JourneyMonitor {
     const timeUntilDeparture = departureTime.getTime() - now.getTime();
 
     // Determine initial status and next_check_at
-    let monitoringStatus: MonitoringStatus = 'pending_rid';
+    const monitoringStatus: MonitoringStatus = 'pending_rid';
     let nextCheckAt: Date;
 
     if (timeUntilDeparture > this.t48Hours) {

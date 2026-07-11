@@ -73,7 +73,6 @@ import { DelayEnsureHandler } from '../../../src/api/delay-ensure.handler.js';
 
 // NOTE: DelayEnsureHandler is tested via express integration using supertest
 import express from 'express';
-// @ts-ignore — supertest may not have its own type declaration but is dev-dep
 import request from 'supertest';
 
 // ─── Helper ───────────────────────────────────────────────────────────────────

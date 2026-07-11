@@ -8,7 +8,7 @@
  * - Event publishing via outbox pattern
  */
 
-import { Pool, PoolClient } from 'pg';
+import { Pool } from 'pg';
 import { randomUUID } from 'crypto';
 import { JourneyMonitor } from './journey-monitor.js';
 import { DelayDetector } from './delay-detector.js';
